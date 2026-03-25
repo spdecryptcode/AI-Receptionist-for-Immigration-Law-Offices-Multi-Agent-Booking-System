@@ -1,0 +1,830 @@
+"""
+Dashboard UI — username + password protected analytics view at /dashboard/
+"""
+from __future__ import annotations
+
+import asyncio
+import hmac
+import secrets
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
+
+from app.config import settings
+from app.dependencies import get_redis_client, get_supabase_client
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+_SESSION_TTL = 8 * 3600
+_SESSION_KEY = "dash:session:"
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+async def _create_session() -> str:
+    redis = get_redis_client()
+    token = secrets.token_urlsafe(32)
+    await redis.setex(f"{_SESSION_KEY}{token}", _SESSION_TTL, "1")
+    return token
+
+
+async def _valid_session(token: str | None) -> bool:
+    if not token:
+        return False
+    redis = get_redis_client()
+    return await redis.get(f"{_SESSION_KEY}{token}") == "1"
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@router.get("", include_in_schema=False)
+async def dashboard_root():
+    return RedirectResponse("/dashboard/", status_code=302)
+
+
+@router.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page():
+    return HTMLResponse(_LOGIN_HTML)
+
+
+class _LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/login", include_in_schema=False)
+async def do_login(body: _LoginBody, response: Response):
+    username_ok = hmac.compare_digest(
+        body.username.strip().lower().encode(),
+        settings.dashboard_username.strip().lower().encode(),
+    )
+    password_ok = hmac.compare_digest(
+        body.password.encode("utf-8"),
+        settings.dashboard_password.encode("utf-8"),
+    )
+    if not (username_ok and password_ok):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = await _create_session()
+    response.set_cookie(
+        key="dashboard_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=_SESSION_TTL,
+        secure=False,
+    )
+    return {"ok": True}
+
+
+@router.get("/logout", include_in_schema=False)
+async def logout(
+    response: Response,
+    dashboard_session: Optional[str] = Cookie(default=None),
+):
+    if dashboard_session:
+        redis = get_redis_client()
+        await redis.delete(f"{_SESSION_KEY}{dashboard_session}")
+    response.delete_cookie("dashboard_session")
+    return RedirectResponse("/dashboard/login", status_code=302)
+
+
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_page(
+    dashboard_session: Optional[str] = Cookie(default=None),
+):
+    if not await _valid_session(dashboard_session):
+        return RedirectResponse("/dashboard/login", status_code=302)
+    return HTMLResponse(_DASHBOARD_HTML.replace("{{USERNAME}}", settings.dashboard_username))
+
+
+@router.get("/api/stats")
+async def api_stats(
+    dashboard_session: Optional[str] = Cookie(default=None),
+):
+    if not await _valid_session(dashboard_session):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    data = await _fetch_stats()
+    return JSONResponse(data)
+
+
+# ── DB queries ────────────────────────────────────────────────────────────────
+
+async def _fetch_stats() -> dict:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_stats_sync)
+
+
+def _fetch_stats_sync() -> dict:
+    supabase = get_supabase_client()
+    now = datetime.now(timezone.utc)
+    cutoff_30 = (now - timedelta(days=30)).isoformat()
+    cutoff_60 = (now - timedelta(days=60)).isoformat()
+
+    # ── Summary KPIs ─────────────────────────────────────────────────────────
+    r = supabase.table("conversations").select("call_sid", count="exact").gte("updated_at", cutoff_30).execute()
+    total_calls = r.count or 0
+
+    r = supabase.table("conversations").select("call_sid", count="exact").gte("updated_at", cutoff_30).not_.is_("scheduled_at", "null").execute()
+    bookings = r.count or 0
+
+    r = supabase.table("conversations").select("caller_phone").not_.is_("caller_phone", "null").execute()
+    phones = {row["caller_phone"] for row in (r.data or []) if row.get("caller_phone")}
+    total_clients = len(phones)
+
+    r = supabase.table("conversations").select("duration_seconds").gte("updated_at", cutoff_30).not_.is_("duration_seconds", "null").execute()
+    durations = [row["duration_seconds"] for row in (r.data or []) if row.get("duration_seconds")]
+    avg_duration = int(sum(durations) / len(durations)) if durations else 0
+
+    r = supabase.table("conversations").select("call_sid", count="exact").gte("scheduled_at", now.isoformat()).execute()
+    upcoming_appts = r.count or 0
+
+    r = supabase.table("conversations").select("call_sid", count="exact").gte("updated_at", cutoff_60).lt("updated_at", cutoff_30).execute()
+    calls_prev = r.count or 0
+
+    r = supabase.table("conversations").select("call_sid", count="exact").gte("updated_at", cutoff_60).lt("updated_at", cutoff_30).not_.is_("scheduled_at", "null").execute()
+    bookings_prev = r.count or 0
+
+    # ── Calls by day ─────────────────────────────────────────────────────────
+    r = supabase.table("conversations").select("started_at,updated_at").gte("updated_at", cutoff_30).execute()
+    day_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        ts = row.get("started_at") or row.get("updated_at") or ""
+        if ts:
+            day = ts[:10]
+            day_counts[day] = day_counts.get(day, 0) + 1
+    calls_by_day = [{"day": d, "count": c} for d, c in sorted(day_counts.items())]
+
+    # ── Outcomes ─────────────────────────────────────────────────────────────
+    r = supabase.table("conversations").select("call_outcome,scheduled_at,transferred_at").execute()
+    outcome_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        outcome = row.get("call_outcome")
+        if not outcome:
+            if row.get("scheduled_at"):
+                outcome = "booking_made"
+            elif row.get("transferred_at"):
+                outcome = "transferred_to_staff"
+        if outcome:
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+    outcomes = [{"label": k, "count": v} for k, v in sorted(outcome_counts.items(), key=lambda x: -x[1])]
+
+    # ── Case types ───────────────────────────────────────────────────────────
+    r = supabase.table("immigration_intakes").select("case_type").not_.is_("case_type", "null").execute()
+    ct_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        ct = row.get("case_type")
+        if ct:
+            ct_counts[ct] = ct_counts.get(ct, 0) + 1
+    case_types = [{"label": k, "count": v} for k, v in sorted(ct_counts.items(), key=lambda x: -x[1])]
+
+    # ── Language breakdown (replaces client-status chart) ────────────────────
+    r = supabase.table("conversations").select("language_detected").execute()
+    lang_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        lang = row.get("language_detected") or "en"
+        lang_counts[lang] = lang_counts.get(lang, 0) + 1
+    client_statuses = [{"label": k, "count": v} for k, v in sorted(lang_counts.items(), key=lambda x: -x[1])]
+
+    # ── Urgency levels ───────────────────────────────────────────────────────
+    r = supabase.table("conversations").select("urgency_label").not_.is_("urgency_label", "null").execute()
+    urg_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        ul = row.get("urgency_label")
+        if ul:
+            urg_counts[ul] = urg_counts.get(ul, 0) + 1
+    urgency_levels = [{"label": k, "count": v} for k, v in sorted(urg_counts.items(), key=lambda x: -x[1])]
+
+    # ── Channel breakdown ────────────────────────────────────────────────────
+    r = supabase.table("conversations").select("channel").execute()
+    ch_counts: dict[str, int] = {}
+    for row in (r.data or []):
+        ch = row.get("channel") or "phone"
+        ch_counts[ch] = ch_counts.get(ch, 0) + 1
+    channels = [{"label": k, "count": v} for k, v in sorted(ch_counts.items(), key=lambda x: -x[1])]
+
+    # ── Recent calls ─────────────────────────────────────────────────────────
+    r = supabase.table("conversations").select(
+        "call_sid,caller_phone,caller_name,started_at,updated_at,duration_seconds,call_outcome,channel,scheduled_at,transferred_at"
+    ).order("updated_at", desc=True).limit(20).execute()
+    recent_calls = []
+    for row in (r.data or []):
+        outcome = row.get("call_outcome")
+        if not outcome:
+            if row.get("scheduled_at"):
+                outcome = "booking_made"
+            elif row.get("transferred_at"):
+                outcome = "transferred_to_staff"
+        recent_calls.append({
+            "sid": row.get("call_sid") or "",
+            "name": row.get("caller_name") or "Unknown",
+            "phone": row.get("caller_phone") or "",
+            "started_at": row.get("started_at") or row.get("updated_at") or "",
+            "duration": int(row.get("duration_seconds") or 0),
+            "outcome": outcome or "\u2014",
+            "channel": row.get("channel") or "phone",
+        })
+
+    # ── Intake records ───────────────────────────────────────────────────────
+    r = supabase.table("immigration_intakes").select(
+        "call_sid,full_name,caller_phone,case_type,urgency_reason,current_immigration_status,created_at"
+    ).order("created_at", desc=True).limit(25).execute()
+    intake_sids = [row["call_sid"] for row in (r.data or []) if row.get("call_sid")]
+    urgency_map: dict[str, str] = {}
+    if intake_sids:
+        conv_r = supabase.table("conversations").select("call_sid,urgency_label").in_("call_sid", intake_sids).execute()
+        for conv in (conv_r.data or []):
+            if conv.get("urgency_label"):
+                urgency_map[conv["call_sid"]] = conv["urgency_label"]
+    intake_records = []
+    for row in (r.data or []):
+        sid = row.get("call_sid") or ""
+        intake_records.append({
+            "name": row.get("full_name") or "Unknown",
+            "phone": row.get("caller_phone") or "",
+            "case_type": row.get("case_type") or "",
+            "urgency": urgency_map.get(sid, ""),
+            "urgency_reason": row.get("urgency_reason") or "",
+            "court_date": "",
+            "status": row.get("current_immigration_status") or "",
+            "detained": False,
+            "completeness": 0,
+            "started_at": row.get("created_at") or "",
+        })
+
+    return {
+        "summary": {
+            "total_calls_30d": total_calls,
+            "bookings_30d": bookings,
+            "active_clients": total_clients,
+            "total_clients": total_clients,
+            "avg_duration_sec": avg_duration,
+            "upcoming_appointments": upcoming_appts,
+            "calls_prev_30d": calls_prev,
+            "bookings_prev_30d": bookings_prev,
+        },
+        "calls_by_day": calls_by_day,
+        "outcomes": outcomes,
+        "case_types": case_types,
+        "client_statuses": client_statuses,
+        "urgency_levels": urgency_levels,
+        "channels": channels,
+        "recent_calls": recent_calls,
+        "intake_records": intake_records,
+    }
+
+
+# ── HTML ──────────────────────────────────────────────────────────────────────
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IVR Immigration \u2014 Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: #0f172a;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      position: relative; overflow: hidden;
+    }
+    body::before {
+      content: ''; position: absolute;
+      width: 600px; height: 600px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%);
+      top: -200px; left: -200px;
+    }
+    body::after {
+      content: ''; position: absolute;
+      width: 500px; height: 500px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(139,92,246,0.1) 0%, transparent 70%);
+      bottom: -150px; right: -150px;
+    }
+    .card {
+      background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+      padding: 40px; width: 100%; max-width: 400px; margin: 20px;
+      position: relative; z-index: 1; box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+    }
+    .logo-wrap { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 32px; }
+    .logo-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .logo-icon svg { width: 22px; height: 22px; fill: white; }
+    .logo-text h1 { font-size: 17px; font-weight: 700; color: #f1f5f9; }
+    .logo-text p { font-size: 12px; color: #64748b; margin-top: 1px; }
+    .divider { height: 1px; background: #334155; margin-bottom: 28px; }
+    .signin-title { font-size: 15px; font-weight: 600; color: #e2e8f0; margin-bottom: 6px; }
+    .signin-sub { font-size: 13px; color: #64748b; margin-bottom: 24px; }
+    label { display: block; font-size: 12px; font-weight: 500; color: #94a3b8; margin-bottom: 6px; letter-spacing: 0.3px; }
+    .input-wrap { position: relative; margin-bottom: 16px; }
+    .input-wrap .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #475569; pointer-events: none; }
+    input[type=text], input[type=password] {
+      width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px;
+      padding: 11px 12px 11px 38px; font-size: 14px; font-family: inherit;
+      color: #e2e8f0; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+    input::placeholder { color: #334155; }
+    .error-box {
+      display: none; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; color: #f87171;
+      margin-bottom: 16px; align-items: center; gap: 8px;
+    }
+    .error-box.show { display: flex; }
+    .btn {
+      width: 100%; background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: none; border-radius: 8px; padding: 12px;
+      font-size: 14px; font-weight: 600; font-family: inherit;
+      color: white; cursor: pointer; transition: opacity 0.15s, transform 0.1s; margin-top: 4px;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.99); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .footer { margin-top: 28px; text-align: center; font-size: 12px; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-wrap">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <h1>IVR Immigration</h1>
+        <p>Analytics Dashboard</p>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <p class="signin-title">Welcome back</p>
+    <p class="signin-sub">Sign in to your dashboard account</p>
+
+    <div class="error-box" id="errorBox">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <span id="errorMsg">Invalid username or password.</span>
+    </div>
+
+    <form id="loginForm" autocomplete="on">
+      <div>
+        <label for="username">Username</label>
+        <div class="input-wrap">
+          <span class="icon">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+          </span>
+          <input type="text" id="username" name="username" placeholder="Enter username" autocomplete="username" autofocus>
+        </div>
+      </div>
+      <div>
+        <label for="password">Password</label>
+        <div class="input-wrap">
+          <span class="icon">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+          </span>
+          <input type="password" id="password" name="password" placeholder="Enter password" autocomplete="current-password">
+        </div>
+      </div>
+      <button type="submit" class="btn" id="submitBtn">Sign In</button>
+    </form>
+    <div class="footer">Authorized access only &nbsp;&middot;&nbsp; Session expires in 8 hours</div>
+  </div>
+
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const btn = document.getElementById('submitBtn');
+      const errBox = document.getElementById('errorBox');
+      errBox.classList.remove('show');
+      if (!username || !password) {
+        document.getElementById('errorMsg').textContent = 'Please enter both username and password.';
+        errBox.classList.add('show'); return;
+      }
+      btn.textContent = 'Signing in\u2026'; btn.disabled = true;
+      try {
+        const res = await fetch('/dashboard/login', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username, password}), credentials: 'same-origin',
+        });
+        if (res.ok) { window.location.href = '/dashboard/'; return; }
+        document.getElementById('errorMsg').textContent = 'Invalid username or password. Please try again.';
+        errBox.classList.add('show');
+        document.getElementById('password').value = '';
+        document.getElementById('password').focus();
+      } catch {
+        document.getElementById('errorMsg').textContent = 'Connection error. Please try again.';
+        errBox.classList.add('show');
+      } finally { btn.textContent = 'Sign In'; btn.disabled = false; }
+    });
+  </script>
+</body>
+</html>"""
+
+
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IVR Immigration \u2014 Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f8fafc; --surface: #ffffff; --border: #e2e8f0;
+      --text: #0f172a; --text-2: #475569; --text-3: #94a3b8;
+      --accent: #6366f1; --sidebar: #0f172a; --radius: 12px;
+    }
+    html, body { height: 100%; font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+    .app { display: flex; height: 100vh; overflow: hidden; }
+    /* Sidebar */
+    .sidebar { width: 240px; flex-shrink: 0; background: var(--sidebar); display: flex; flex-direction: column; border-right: 1px solid #1e293b; }
+    .sidebar-header { padding: 20px 20px 16px; border-bottom: 1px solid #1e293b; }
+    .sidebar-logo { display: flex; align-items: center; gap: 10px; }
+    .sidebar-logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg,#6366f1,#8b5cf6); border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .sidebar-logo-icon svg { width: 18px; height: 18px; fill: white; }
+    .sidebar-logo-text span:first-child { display: block; font-size: 13px; font-weight: 700; color: #f1f5f9; }
+    .sidebar-logo-text span:last-child { font-size: 11px; color: #475569; }
+    .sidebar-nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+    .nav-section { margin-bottom: 20px; }
+    .nav-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #334155; padding: 0 10px 8px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; color: #94a3b8; font-size: 13px; font-weight: 500; transition: background 0.12s, color 0.12s; margin-bottom: 2px; }
+    .nav-item:hover { background: #1e293b; color: #e2e8f0; }
+    .nav-item.active { background: rgba(99,102,241,0.15); color: #818cf8; }
+    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+    .sidebar-footer { padding: 12px 10px; border-top: 1px solid #1e293b; }
+    .user-card { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; }
+    .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg,#6366f1,#8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: white; flex-shrink: 0; }
+    .user-info span:first-child { display: block; font-size: 12px; font-weight: 600; color: #e2e8f0; }
+    .user-info span:last-child { font-size: 11px; color: #475569; }
+    .logout-btn { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; color: #475569; font-size: 13px; font-weight: 500; cursor: pointer; text-decoration: none; transition: background 0.12s, color 0.12s; margin-top: 2px; }
+    .logout-btn:hover { background: rgba(239,68,68,0.1); color: #f87171; }
+    .logout-btn svg { width: 16px; height: 16px; }
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; height: 60px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .page-title { font-size: 16px; font-weight: 700; color: var(--text); }
+    .page-sub { font-size: 12px; color: var(--text-3); }
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .badge-live { display: flex; align-items: center; gap: 6px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 20px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #16a34a; }
+    .badge-live .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .refresh-btn { display: flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer; font-family: inherit; transition: border-color 0.12s, color 0.12s; }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .refresh-btn svg { width: 13px; height: 13px; }
+    .last-updated { font-size: 11px; color: var(--text-3); }
+    /* Content */
+    .content { flex: 1; overflow-y: auto; padding: 24px; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 24px; }
+    @media (max-width: 1200px) { .kpi-grid { grid-template-columns: repeat(2,1fr); } }
+    .kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+    .kpi-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
+    .kpi-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
+    .kpi-icon svg { width: 18px; height: 18px; }
+    .kpi-trend { display: flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 20px; }
+    .kpi-trend.up { color: #16a34a; background: #f0fdf4; }
+    .kpi-trend.down { color: #dc2626; background: #fef2f2; }
+    .kpi-trend.neutral { color: #64748b; background: #f1f5f9; }
+    .kpi-value { font-size: 28px; font-weight: 700; color: var(--text); line-height: 1; margin-bottom: 4px; }
+    .kpi-label { font-size: 12px; font-weight: 500; color: var(--text-3); }
+    .chart-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .chart-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    @media (max-width: 1100px) { .chart-grid-2,.chart-grid-3 { grid-template-columns: 1fr; } }
+    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .chart-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .chart-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--text-3); font-size: 13px; }
+    .table-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 16px; }
+    .table-header-bar { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; }
+    thead tr { background: #f8fafc; }
+    th { text-align: left; padding: 11px 16px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-3); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 13px 16px; font-size: 13px; color: var(--text-2); border-bottom: 1px solid #f1f5f9; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafbff; }
+    .td-main { font-weight: 500; color: var(--text); }
+    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .mono { font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; }
+    .loading-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; z-index: 100; }
+    .spinner { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 13px; color: var(--text-3); font-weight: 500; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div id="loadingOverlay" class="loading-overlay">
+  <div class="spinner"></div>
+  <p class="loading-text">Loading dashboard\u2026</p>
+</div>
+
+<div class="app" id="appShell" style="display:none">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <div class="sidebar-logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
+        </div>
+        <div class="sidebar-logo-text">
+          <span>IVR Immigration</span>
+          <span>AI Receptionist</span>
+        </div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-label">Overview</div>
+        <div class="nav-item active" onclick="window.scrollTo(0,0)">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Dashboard
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">Analytics</div>
+        <div class="nav-item" onclick="document.getElementById('callsSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Call Volume
+        </div>
+        <div class="nav-item" onclick="document.getElementById('chartsSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+          Case Analytics
+        </div>
+        <div class="nav-item" onclick="document.getElementById('tableSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
+          Recent Calls
+        </div>
+        <div class="nav-item" onclick="document.getElementById('intakeSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Intake Records
+        </div>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar" id="userAvatar">A</div>
+        <div class="user-info">
+          <span id="userNameDisplay">{{USERNAME}}</span>
+          <span>Administrator</span>
+        </div>
+      </div>
+      <a class="logout-btn" href="/dashboard/logout">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out
+      </a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <div class="page-title">Analytics Overview</div>
+        <div class="page-sub" id="dateRange">Last 30 days</div>
+      </div>
+      <div class="topbar-right">
+        <div class="badge-live"><span class="dot"></span>Live</div>
+        <span class="last-updated" id="lastUpdated"></span>
+        <button class="refresh-btn" onclick="loadData()">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          Refresh
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="kpi-grid" id="kpiGrid"></div>
+
+      <div class="chart-card" id="callsSection" style="margin-bottom:16px">
+        <div class="chart-header">
+          <div><div class="chart-title">Call Volume</div><div class="chart-sub">Daily calls over the last 30 days</div></div>
+        </div>
+        <canvas id="callsChart" height="65"></canvas>
+        <div class="empty-state" id="callsEmpty" style="display:none">No call data yet</div>
+      </div>
+
+      <div class="chart-grid-2" id="chartsSection">
+        <div class="chart-card">
+          <div class="chart-header"><div><div class="chart-title">Call Outcomes</div><div class="chart-sub">All time distribution</div></div></div>
+          <div style="display:flex;justify-content:center;align-items:center;min-height:220px">
+            <canvas id="outcomesChart" style="max-width:260px;max-height:260px"></canvas>
+            <div class="empty-state" id="outcomesEmpty" style="display:none">No data yet</div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-header"><div><div class="chart-title">Case Types</div><div class="chart-sub">Intake classification</div></div></div>
+          <canvas id="caseTypesChart"></canvas>
+          <div class="empty-state" id="caseTypesEmpty" style="display:none">No intake data yet</div>
+        </div>
+      </div>
+
+      <div class="chart-grid-3">
+        <div class="chart-card">
+          <div class="chart-header"><div><div class="chart-title">Client Pipeline</div><div class="chart-sub">Status distribution</div></div></div>
+          <canvas id="statusChart"></canvas>
+          <div class="empty-state" id="statusEmpty" style="display:none">No clients yet</div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-header"><div><div class="chart-title">Urgency Levels</div><div class="chart-sub">Triage classification</div></div></div>
+          <div style="display:flex;justify-content:center;align-items:center;min-height:180px">
+            <canvas id="urgencyChart" style="max-width:200px;max-height:200px"></canvas>
+            <div class="empty-state" id="urgencyEmpty" style="display:none">No urgency data</div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-header"><div><div class="chart-title">Channels</div><div class="chart-sub">Contact source mix</div></div></div>
+          <div style="display:flex;justify-content:center;align-items:center;min-height:180px">
+            <canvas id="channelsChart" style="max-width:200px;max-height:200px"></canvas>
+            <div class="empty-state" id="channelsEmpty" style="display:none">No channel data</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-card" id="tableSection">
+        <div class="table-header-bar">
+          <div>
+            <div class="chart-title">Recent Calls</div>
+            <div class="chart-sub" style="margin-top:2px">Latest 20 inbound interactions</div>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Caller</th><th>Phone</th><th>Channel</th>
+              <th>Outcome</th><th>Duration</th><th>Time</th>
+            </tr></thead>
+            <tbody id="callsTableBody">
+              <tr><td colspan="6" class="empty-state">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="table-card" id="intakeSection" style="margin-bottom:16px">
+        <div class="table-header-bar">
+          <div>
+            <div class="chart-title">Immigration Intake Records</div>
+            <div class="chart-sub" style="margin-top:2px">Latest 25 structured intake records per caller</div>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Caller</th><th>Phone</th><th>Case Type</th><th>Urgency</th>
+              <th>Court Date</th><th>Imm. Status</th><th>Detained</th><th>Complete</th><th>Time</th>
+            </tr></thead>
+            <tbody id="intakeTableBody">
+              <tr><td colspan="9" class="empty-state">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.font.family = "'Inter', -apple-system, sans-serif";
+Chart.defaults.color = '#94a3b8';
+
+const OUTCOME_C={booking_made:'#22c55e',transferred_to_staff:'#3b82f6',callback_requested:'#f59e0b',info_only:'#8b5cf6',dropped:'#ef4444',voicemail:'#64748b',no_answer:'#94a3b8'};
+const CASE_C={family_sponsorship:'#6366f1',employment_visa:'#8b5cf6',asylum:'#ec4899',removal_defense:'#ef4444',daca:'#f59e0b',tps:'#10b981',naturalization:'#0891b2',other:'#64748b'};
+const STATUS_C={new_lead:'#3b82f6',intake_scheduled:'#8b5cf6',intake_complete:'#6d28d9',active_client:'#10b981',closed:'#94a3b8',do_not_contact:'#ef4444'};
+const URGENCY_C={critical:'#dc2626',high:'#ea580c',medium:'#d97706',routine:'#16a34a'};
+const CHANNEL_C={phone:'#6366f1',sms:'#8b5cf6',whatsapp:'#22c55e',facebook:'#1d4ed8',instagram:'#ec4899',web_chat:'#0891b2'};
+const FB=['#6366f1','#8b5cf6','#ec4899','#ef4444','#f59e0b','#10b981','#0891b2','#64748b'];
+const OUTCOME_B={booking_made:'background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0',transferred_to_staff:'background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe',callback_requested:'background:#fffbeb;color:#b45309;border:1px solid #fde68a',dropped:'background:#fef2f2;color:#dc2626;border:1px solid #fecaca',voicemail:'background:#f8fafc;color:#475569;border:1px solid #e2e8f0',info_only:'background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe',no_answer:'background:#f8fafc;color:#64748b;border:1px solid #e2e8f0'};
+let _ch={};
+function kC(){Object.values(_ch).forEach(c=>c.destroy());_ch={};}
+function col(m,k){return m[k]||FB[0];}
+function fmt(s){return(s||'').replace(/_/g,' ').replace(/\\b\\w/g,c=>c.toUpperCase());}
+function fmtD(s){if(!s)return'\u2014';const m=Math.floor(s/60),r=s%60;return m?`${m}m ${r}s`:`${r}s`;}
+function fmtT(iso){if(!iso)return'\u2014';try{return new Date(iso).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}catch{return iso;}}
+
+const KPI=[
+  {k:'total_calls_30d',l:'Total Calls',s:'Last 30 days',p:'calls_prev_30d',ib:'#eff6ff',ic:'#2563eb',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>`},
+  {k:'bookings_30d',l:'Consultations Booked',s:'Last 30 days',p:'bookings_prev_30d',ib:'#f0fdf4',ic:'#16a34a',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`},
+  {k:'active_clients',l:'Active Clients',s:'Current pipeline',ib:'#f5f3ff',ic:'#7c3aed',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>`},
+  {k:'total_clients',l:'Total Clients',s:'All time',ib:'#fff7ed',ic:'#c2410c',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`},
+  {k:'avg_duration_sec',l:'Avg Call Duration',s:'Last 30 days',f:fmtD,ib:'#fefce8',ic:'#a16207',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`},
+  {k:'upcoming_appointments',l:'Upcoming Appointments',s:'Scheduled & confirmed',ib:'#fdf2f8',ic:'#be185d',
+   i:`<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>`},
+];
+
+function renderKPIs(s){
+  const br=s.total_calls_30d?Math.round(s.bookings_30d/s.total_calls_30d*100):0;
+  document.getElementById('kpiGrid').innerHTML=KPI.map(d=>{
+    const raw=s[d.k]??0,val=d.f?d.f(raw):raw.toLocaleString();
+    let tr='';
+    if(d.p){const prev=s[d.p]??0,diff=raw-prev,pct=prev?Math.abs(Math.round(diff/prev*100)):0,cls=diff>0?'up':diff<0?'down':'neutral';tr=`<div class="kpi-trend ${cls}">${diff>=0?'\u2191':'\u2193'} ${pct}%</div>`;}
+    if(d.k==='bookings_30d')tr=`<div class="kpi-trend ${br>=30?'up':br>0?'neutral':'down'}">${br}% rate</div>`;
+    return`<div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:${d.ib};color:${d.ic}">${d.i}</div>${tr}</div><div class="kpi-value">${val}</div><div class="kpi-label">${d.l} <span style="color:#cbd5e1;margin:0 4px">&middot;</span><span style="font-weight:400">${d.s}</span></div></div>`;
+  }).join('');
+}
+
+function renderLine(data){
+  if(!data.length){document.getElementById('callsChart').style.display='none';document.getElementById('callsEmpty').style.display='block';return;}
+  _ch.calls=new Chart(document.getElementById('callsChart'),{type:'line',
+    data:{labels:data.map(d=>new Date(d.day+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})),
+      datasets:[{label:'Calls',data:data.map(d=>d.count),borderColor:'#6366f1',
+        backgroundColor:c=>{const g=c.chart.ctx.createLinearGradient(0,0,0,c.chart.height);g.addColorStop(0,'rgba(99,102,241,0.15)');g.addColorStop(1,'rgba(99,102,241,0)');return g;},
+        borderWidth:2.5,tension:0.4,pointRadius:3,pointBackgroundColor:'#6366f1',pointBorderColor:'#fff',pointBorderWidth:2,fill:true}]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{y:{beginAtZero:true,ticks:{stepSize:1,color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},x:{ticks:{color:'#94a3b8',maxTicksLimit:12},grid:{display:false}}}}});
+}
+function donut(id,eid,data,cmap){
+  if(!data.length){document.getElementById(id).style.display='none';document.getElementById(eid).style.display='block';return;}
+  _ch[id]=new Chart(document.getElementById(id),{type:'doughnut',
+    data:{labels:data.map(d=>fmt(d.label)),datasets:[{data:data.map(d=>d.count),backgroundColor:data.map(d=>col(cmap,d.label)),borderWidth:3,borderColor:'#fff',hoverOffset:8}]},
+    options:{responsive:true,cutout:'65%',plugins:{legend:{position:'bottom',labels:{boxWidth:10,padding:14,font:{size:11}}},tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}}}});
+}
+function hbar(id,eid,data,cmap){
+  if(!data.length){document.getElementById(id).style.display='none';document.getElementById(eid).style.display='block';return;}
+  _ch[id]=new Chart(document.getElementById(id),{type:'bar',
+    data:{labels:data.map(d=>fmt(d.label)),datasets:[{data:data.map(d=>d.count),backgroundColor:data.map(d=>col(cmap,d.label)+'22'),borderColor:data.map(d=>col(cmap,d.label)),borderWidth:1.5,borderRadius:5,borderSkipped:false}]},
+    options:{indexAxis:'y',responsive:true,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{x:{beginAtZero:true,ticks:{stepSize:1,color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},y:{ticks:{color:'#374151',font:{size:11}},grid:{display:false}}}}});
+}
+function renderTable(data){
+  const tb=document.getElementById('callsTableBody');
+  if(!data.length){tb.innerHTML='<tr><td colspan="6" class="empty-state" style="padding:40px">No calls recorded yet</td></tr>';return;}
+  tb.innerHTML=data.map(r=>{
+    const bs=OUTCOME_B[r.outcome]||'background:#f8fafc;color:#475569;border:1px solid #e2e8f0';
+    return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td><span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">${fmt(r.channel)}</span></td><td><span class="badge" style="${bs}">${fmt(r.outcome)}</span></td><td>${fmtD(r.duration)}</td><td>${fmtT(r.started_at)}</td></tr>`;
+  }).join('');
+}
+const URGENCY_B={critical:'background:#fef2f2;color:#dc2626;border:1px solid #fecaca',high:'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa',medium:'background:#fffbeb;color:#b45309;border:1px solid #fde68a',routine:'background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0'};
+function renderIntakeTable(data){
+  const tb=document.getElementById('intakeTableBody');
+  if(!data||!data.length){tb.innerHTML='<tr><td colspan="9" class="empty-state" style="padding:40px">No intake records yet</td></tr>';return;}
+  tb.innerHTML=data.map(r=>{
+    const cs=CASE_C[r.case_type]||FB[7];
+    const caseBadge=r.case_type?`<span class="badge" style="background:${cs}22;color:${cs};border:1px solid ${cs}44">${fmt(r.case_type)}</span>`:'\u2014';
+    const us=URGENCY_B[r.urgency]||'background:#f8fafc;color:#475569;border:1px solid #e2e8f0';
+    const urgBadge=r.urgency?`<span class="badge" style="${us}">${fmt(r.urgency)}</span>`:'\u2014';
+    const detained=r.detained?'<span class="badge" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca">Yes</span>':'<span style="color:#94a3b8">No</span>';
+    const pct=r.completeness||0,pctColor=pct>=80?'#16a34a':pct>=50?'#d97706':'#dc2626';
+    const complete=`<div style="display:flex;align-items:center;gap:6px"><div style="width:52px;height:6px;border-radius:3px;background:#e2e8f0;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pctColor};border-radius:3px"></div></div><span style="font-size:11px;color:${pctColor};font-weight:600">${pct}%</span></div>`;
+    const courtDate=r.court_date?new Date(r.court_date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'\u2014';
+    return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td>${caseBadge}</td><td>${urgBadge}</td><td>${courtDate}</td><td>${fmt(r.status)||'\u2014'}</td><td>${detained}</td><td>${complete}</td><td>${fmtT(r.started_at)}</td></tr>`;
+  }).join('');
+}
+
+async function loadData(){
+  try{
+    const res=await fetch('/dashboard/api/stats',{credentials:'same-origin'});
+    if(res.status===401){window.location.href='/dashboard/login';return;}
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const d=await res.json();
+    kC();
+    renderKPIs(d.summary);
+    renderLine(d.calls_by_day);
+    donut('outcomesChart','outcomesEmpty',d.outcomes,OUTCOME_C);
+    hbar('caseTypesChart','caseTypesEmpty',d.case_types,CASE_C);
+    hbar('statusChart','statusEmpty',d.client_statuses,STATUS_C);
+    donut('urgencyChart','urgencyEmpty',d.urgency_levels,URGENCY_C);
+    donut('channelsChart','channelsEmpty',d.channels,CHANNEL_C);
+    renderTable(d.recent_calls);
+    renderIntakeTable(d.intake_records);
+    const now=new Date(),past=new Date(now);past.setDate(past.getDate()-30);
+    document.getElementById('dateRange').textContent=past.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' \u2013 '+now.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+    document.getElementById('lastUpdated').textContent='Updated '+now.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+    const u=document.getElementById('userNameDisplay').textContent;
+    document.getElementById('userAvatar').textContent=(u[0]||'A').toUpperCase();
+    document.getElementById('loadingOverlay').style.display='none';
+    document.getElementById('appShell').style.display='flex';
+  }catch(err){
+    document.getElementById('loadingOverlay').innerHTML=`<div style="text-align:center"><p style="font-size:15px;font-weight:600;margin-bottom:8px">Failed to load</p><p style="font-size:13px;color:#64748b;margin-bottom:16px">${err.message}</p><button onclick="loadData()" style="background:#6366f1;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;cursor:pointer;font-family:inherit">Try again</button></div>`;
+  }
+}
+
+loadData();
+setInterval(loadData,5*60*1000);
+</script>
+</body>
+</html>"""

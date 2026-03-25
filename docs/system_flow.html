@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IVR Immigration AI Receptionist — System Flow</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 32px;
+      min-width: 1100px;
+    }
+
+    /* ── Header ─────────────────────────────────────── */
+    .header {
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #1e293b 100%);
+      color: white;
+      padding: 30px 40px;
+      border-radius: 18px;
+      margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    }
+    .header-emoji { font-size: 52px; filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3)); }
+    .header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+    .header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+    .header-right { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .tech-badges { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .tech-badge {
+      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+      color: #e2e8f0; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600;
+    }
+    .header-meta { font-size: 11px; color: #475569; }
+
+    /* ── Section labels ──────────────────────────────── */
+    .stage { margin-bottom: 8px; }
+    .stage-label {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.2px; color: #64748b; margin-bottom: 10px; padding-left: 2px;
+    }
+    .stage-num {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: #334155; color: #94a3b8;
+      font-size: 10px; font-weight: 800;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .stage-num.active { background: #6366f1; color: white; }
+
+    /* ── Arrows ──────────────────────────────────────── */
+    .arrow-down {
+      display: flex; flex-direction: column; align-items: center;
+      height: 28px; margin: 4px 0;
+    }
+    .arrow-down-line { width: 2px; flex: 1; background: #94a3b8; }
+    .arrow-down-head {
+      width: 0; height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      border-top: 9px solid #94a3b8;
+    }
+    .arrow-label {
+      font-size: 10px; color: #64748b; font-weight: 500;
+      background: white; padding: 2px 8px; border-radius: 10px;
+      border: 1px solid #e2e8f0; margin: 0 8px;
+    }
+    .arrow-row { display: flex; align-items: center; justify-content: center; gap: 0; height: 28px; margin: 4px 0; }
+
+    /* ── Cards – base ────────────────────────────────── */
+    .card {
+      background: white; border-radius: 14px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+      padding: 18px 22px;
+    }
+    .card-title { font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+    .card-sub { font-size: 11px; color: #64748b; }
+
+    /* chip */
+    .chip {
+      display: inline-flex; align-items: center;
+      padding: 3px 9px; border-radius: 20px;
+      font-size: 10px; font-weight: 700; white-space: nowrap;
+    }
+
+    /* ── Stage 1: Channels ───────────────────────────── */
+    .channels-grid {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;
+    }
+    .ch-card {
+      background: white; border-radius: 12px; padding: 16px 10px;
+      text-align: center; border: 2px solid #e2e8f0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+      transition: transform 0.15s;
+    }
+    .ch-card:hover { transform: translateY(-2px); }
+    .ch-card.highlight { border-color: #3b82f6; background: #eff6ff; }
+    .ch-icon { font-size: 28px; margin-bottom: 8px; }
+    .ch-name { font-size: 12px; font-weight: 700; color: #1e293b; }
+    .ch-note { font-size: 10px; color: #94a3b8; margin-top: 3px; }
+
+    /* ── Stage 2: Twilio Gateway ─────────────────────── */
+    .twilio-card {
+      background: linear-gradient(135deg, #1e40af, #2563eb);
+      border-radius: 14px; padding: 20px 28px;
+      display: flex; align-items: center; gap: 24px;
+      box-shadow: 0 4px 16px rgba(37,99,235,0.3);
+    }
+    .twilio-icon { font-size: 40px; }
+    .twilio-info h3 { font-size: 17px; font-weight: 800; color: white; margin-bottom: 4px; }
+    .twilio-info p { font-size: 12px; color: #bfdbfe; }
+    .twilio-chips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    .twilio-chip {
+      background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+      color: white; padding: 5px 12px; border-radius: 8px; font-size: 11px; font-weight: 600;
+    }
+    .security-note {
+      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px; padding: 8px 14px; margin-top: 10px;
+      font-size: 11px; color: #bfdbfe;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* ── Stage 3: Routing ────────────────────────────── */
+    .routing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .route-card {
+      border-radius: 14px; padding: 18px 20px;
+      border: 2px solid; position: relative;
+    }
+    .route-card.open  { background: #f0fdf4; border-color: #22c55e; }
+    .route-card.full  { background: #fffbeb; border-color: #f59e0b; }
+    .route-card.hours { background: #fef2f2; border-color: #ef4444; }
+    .route-badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 10px; display: inline-block; margin-bottom: 8px; }
+    .badge-green  { background: #dcfce7; color: #15803d; }
+    .badge-amber  { background: #fef3c7; color: #92400e; }
+    .badge-red    { background: #fee2e2; color: #b91c1c; }
+    .badge-purple { background: #f5f3ff; color: #6d28d9; }
+    .badge-blue   { background: #eff6ff; color: #1e40af; }
+    .badge-gray   { background: #f1f5f9; color: #475569; }
+    .badge-cyan   { background: #ecfeff; color: #0e7490; }
+    .route-title { font-size: 14px; font-weight: 800; color: #0f172a; margin-bottom: 6px; }
+    .route-list { list-style: none; }
+    .route-list li { font-size: 11px; color: #475569; padding: 3px 0; display: flex; align-items: center; gap: 6px; }
+    .dot-green { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+    .dot-amber { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; flex-shrink: 0; }
+    .dot-red   { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
+
+    /* ── Stage 4: RT Pipeline (DARK) ─────────────────── */
+    .rt-outer {
+      background: linear-gradient(160deg, #0f172a 0%, #1e293b 100%);
+      border-radius: 18px; padding: 26px 28px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      border: 1px solid #1e293b;
+    }
+    .rt-header {
+      text-align: center; margin-bottom: 20px;
+    }
+    .rt-header h2 {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 2px; color: #475569; margin-bottom: 4px;
+    }
+    .rt-header p { font-size: 13px; font-weight: 600; color: #94a3b8; }
+
+    .rt-grid {
+      display: grid;
+      grid-template-columns: 1fr 52px 1.3fr 52px 1fr;
+      gap: 0; align-items: start;
+    }
+    .rt-col { display: flex; flex-direction: column; gap: 8px; }
+    .rt-col-header {
+      text-align: center; font-size: 10px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: 1px;
+      padding: 7px 12px; border-radius: 8px; margin-bottom: 4px;
+    }
+    .col-in    { background: #172554; color: #93c5fd; }
+    .col-ai    { background: #052e16; color: #86efac; }
+    .col-out   { background: #2e1065; color: #d8b4fe; }
+
+    .rt-block {
+      border-radius: 12px; padding: 14px 16px;
+    }
+    .rt-block-title { font-size: 12px; font-weight: 800; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .rt-block-body  { font-size: 10px; line-height: 1.6; }
+    .rt-block-body span { display: block; }
+    .rt-block-body .detail { color: #475569; }
+
+    /* Audio In block */
+    .blk-twilio-in { background: #1e293b; border: 1px solid #334155; }
+    .blk-twilio-in .rt-block-title { color: #e2e8f0; }
+    .blk-twilio-in .rt-block-body  { color: #94a3b8; }
+
+    .blk-deepgram { background: #0c2340; border: 1px solid #0891b2; }
+    .blk-deepgram .rt-block-title { color: #67e8f9; }
+    .blk-deepgram .rt-block-body  { color: #7dd3fc; }
+
+    /* AI Core blocks */
+    .blk-redis { background: #1c1917; border: 1px solid #b45309; }
+    .blk-redis .rt-block-title { color: #fbbf24; }
+    .blk-redis .rt-block-body  { color: #d97706; }
+
+    .blk-gpt { background: #052e16; border: 1px solid #22c55e; }
+    .blk-gpt .rt-block-title { color: #86efac; }
+    .blk-gpt .rt-block-body  { color: #4ade80; }
+
+    .blk-intake-flow { background: #1c1917; border: 1px solid #f59e0b; }
+    .blk-intake-flow .rt-block-title { color: #fde68a; }
+    .blk-intake-flow .rt-block-body  { color: #d97706; }
+
+    /* Audio Out blocks */
+    .blk-elevenlabs { background: #2e1065; border: 1px solid #8b5cf6; }
+    .blk-elevenlabs .rt-block-title { color: #d8b4fe; }
+    .blk-elevenlabs .rt-block-body  { color: #c4b5fd; }
+
+    .blk-twilio-out { background: #1e293b; border: 1px solid #334155; }
+    .blk-twilio-out .rt-block-title { color: #e2e8f0; }
+    .blk-twilio-out .rt-block-body  { color: #94a3b8; }
+
+    /* Horizontal arrows in RT grid */
+    .rt-harrow {
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 6px; padding-top: 38px;
+    }
+    .h-arrow-line {
+      width: 28px; height: 2px; background: #334155;
+      position: relative;
+    }
+    .h-arrow-line::after {
+      content: '';
+      position: absolute; right: -1px; top: 50%;
+      transform: translateY(-50%);
+      width: 0; height: 0;
+      border-top: 6px solid transparent;
+      border-bottom: 6px solid transparent;
+      border-left: 8px solid #475569;
+    }
+    .h-arrow-label { font-size: 9px; color: #475569; text-align: center; line-height: 1.3; }
+
+    /* Urgency async block */
+    .urgent-wrapper { margin-top: 14px; }
+    .blk-urgency {
+      background: #1c0a00; border: 1px dashed #ea580c;
+      border-radius: 12px; padding: 13px 16px;
+    }
+    .blk-urgency .rt-block-title { color: #fb923c; font-size: 11px; }
+    .blk-urgency .rt-block-body  { color: #9a3412; font-size: 10px; }
+    .async-badge {
+      background: rgba(251,146,60,0.15); border: 1px solid rgba(251,146,60,0.3);
+      color: #fb923c; font-size: 9px; font-weight: 700;
+      padding: 2px 7px; border-radius: 8px;
+    }
+
+    /* Barge-in note */
+    .barge-note {
+      background: rgba(245,158,11,0.08); border: 1px dashed #d97706;
+      border-radius: 8px; padding: 7px 12px;
+      font-size: 9px; color: #92400e; text-align: center; margin-top: 6px;
+    }
+
+    /* FSM phases */
+    .phases-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .phase-chip {
+      font-size: 9px; font-weight: 700; padding: 2px 8px;
+      border-radius: 8px; background: rgba(16,185,129,0.12);
+      color: #6ee7b7; border: 1px solid rgba(16,185,129,0.25);
+    }
+    .phase-chip.active { background: rgba(16,185,129,0.25); color: #34d399; }
+
+    /* ── Stage 5: Actions ────────────────────────────── */
+    .actions-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    .action-card {
+      border-radius: 14px; padding: 18px 18px 16px;
+      border: 2px solid; background: white;
+    }
+    .action-card.emergency { border-color: #ef4444; background: #fef2f2; }
+    .action-card.booking   { border-color: #22c55e; background: #f0fdf4; }
+    .action-card.language  { border-color: #8b5cf6; background: #f5f3ff; }
+    .action-card.endcall   { border-color: #64748b; background: #f8fafc; }
+    .action-icon { font-size: 26px; margin-bottom: 8px; }
+    .action-title { font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+    .action-code { font-family: monospace; font-size: 10px; font-weight: 700;
+      padding: 2px 7px; border-radius: 5px; display: inline-block; margin-bottom: 6px; }
+    .code-red    { background: #fee2e2; color: #dc2626; }
+    .code-green  { background: #dcfce7; color: #16a34a; }
+    .code-purple { background: #f5f3ff; color: #7c3aed; }
+    .code-gray   { background: #f1f5f9; color: #475569; }
+    .action-sub { font-size: 11px; color: #64748b; line-height: 1.5; }
+
+    /* ── Stage 6: Post-Call ──────────────────────────── */
+    .postcall-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    .pc-card {
+      background: white; border-radius: 14px; padding: 18px 18px;
+      border: 1px solid #e2e8f0; box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .pc-icon { font-size: 26px; margin-bottom: 8px; }
+    .pc-title { font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+    .pc-sub { font-size: 11px; color: #64748b; line-height: 1.5; }
+    .pc-highlight { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+    /* ── Stage 7: Storage ────────────────────────────── */
+    .storage-grid { display: grid; grid-template-columns: 1fr 60px 1fr 60px 1.6fr 60px 1fr; gap: 0; align-items: start; }
+    .s-harrow { display: flex; align-items: center; justify-content: center; padding-top: 24px; }
+    .s-harrow-inner { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+    .s-harrow-line { width: 2px; height: 30px; background: #94a3b8; position: relative; }
+    .s-harrow-line::after {
+      content: ''; position: absolute; bottom: -1px; left: 50%;
+      transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 6px solid transparent; border-right: 6px solid transparent;
+      border-top: 8px solid #94a3b8;
+    }
+    .h-arr { display: flex; align-items: center; justify-content: center; padding-top: 24px; }
+    .h-arr-svg { color: #94a3b8; font-size: 20px; }
+
+    .s-card { border-radius: 14px; padding: 18px; border: 2px solid; }
+    .s-card.redis { background: #fffbeb; border-color: #f59e0b; }
+    .s-card.worker { background: #f0fdf4; border-color: #22c55e; }
+    .s-card.db { background: #eff6ff; border-color: #3b82f6; }
+    .s-card.crm { background: #faf5ff; border-color: #a855f7; }
+    .s-icon { font-size: 24px; margin-bottom: 8px; }
+    .s-title { font-size: 13px; font-weight: 800; margin-bottom: 10px; }
+    .s-card.redis .s-title { color: #92400e; }
+    .s-card.worker .s-title { color: #166534; }
+    .s-card.db .s-title { color: #1e40af; }
+    .s-card.crm .s-title { color: #6d28d9; }
+    .s-item { font-size: 10px; color: #334155; padding: 3px 0; border-bottom: 1px dotted #e2e8f0; display: flex; align-items: center; gap: 6px; }
+    .s-item:last-child { border-bottom: none; }
+    .s-item-icon { font-size: 12px; flex-shrink: 0; }
+    .db-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .db-chip { background: #dbeafe; color: #1e40af; font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 5px; display: flex; align-items: center; gap: 3px; }
+
+    /* ── Stage 8: Outputs ────────────────────────────── */
+    .outputs-grid { display: grid; grid-template-columns: repeat(6,1fr); gap: 12px; }
+    .out-card {
+      background: white; border-radius: 14px; padding: 18px 14px;
+      text-align: center; border: 1px solid #e2e8f0;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .out-icon { font-size: 30px; margin-bottom: 8px; }
+    .out-title { font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+    .out-sub { font-size: 10px; color: #94a3b8; line-height: 1.4; }
+
+    /* ── Legend ──────────────────────────────────────── */
+    .legend {
+      background: white; border-radius: 14px; padding: 16px 22px;
+      display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+      border: 1px solid #e2e8f0; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .legend-title { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-right: 6px; }
+    .legend-item { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #475569; }
+    .ld { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+
+    /* ── Utilities ───────────────────────────────────── */
+    .mb-6  { margin-bottom: 6px; }
+    .mb-10 { margin-bottom: 10px; }
+    .mb-20 { margin-bottom: 20px; }
+    .flex-center { display: flex; align-items: center; justify-content: center; }
+    .w-full { width: 100%; }
+    .text-center { text-align: center; }
+    .divider { height: 1px; background: #e2e8f0; margin: 10px 0; }
+    .inline-arrow { color: #94a3b8; margin: 0 4px; font-size: 14px; }
+    .tag {
+      display: inline-block; padding: 2px 8px;  border-radius: 5px;
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+
+    /* print / PDF */
+    @media print {
+      @page { size: A3 landscape; margin: 12mm 14mm; }
+      body { padding: 0; min-width: unset; background: white; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .stage { page-break-inside: avoid; }
+      .rt-outer { page-break-inside: avoid; }
+      .actions-grid { page-break-inside: avoid; }
+      .postcall-grid { page-break-inside: avoid; }
+      .outputs-grid { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     HEADER
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="header">
+  <div class="header-emoji">🏛️</div>
+  <div>
+    <h1>IVR Immigration AI Receptionist</h1>
+    <p>End-to-end system architecture &amp; data flow &mdash; from caller's first word to database record</p>
+  </div>
+  <div class="header-right">
+    <div class="tech-badges">
+      <span class="tech-badge">FastAPI 3000</span>
+      <span class="tech-badge">GPT-4o</span>
+      <span class="tech-badge">Deepgram nova-3</span>
+      <span class="tech-badge">ElevenLabs Flash v2.5</span>
+      <span class="tech-badge">Twilio Media Streams</span>
+      <span class="tech-badge">Redis + PostgreSQL</span>
+      <span class="tech-badge">GoHighLevel CRM</span>
+    </div>
+    <div class="header-meta">Max 10 concurrent calls &nbsp;·&nbsp; EN/ES bilingual &nbsp;·&nbsp; 8-phase conversation FSM &nbsp;·&nbsp; 12 DB tables</div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 1 — INBOUND CHANNELS
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage">
+  <div class="stage-label">
+    <div class="stage-num active">1</div>
+    Inbound Channels &mdash; How clients reach the firm
+  </div>
+  <div class="channels-grid">
+    <div class="ch-card highlight">
+      <div class="ch-icon">📞</div>
+      <div class="ch-name">Phone Call</div>
+      <div class="ch-note">Primary channel · Twilio PSTN</div>
+    </div>
+    <div class="ch-card">
+      <div class="ch-icon">💬</div>
+      <div class="ch-name">SMS</div>
+      <div class="ch-note">Text messages · GPT reply</div>
+    </div>
+    <div class="ch-card">
+      <div class="ch-icon">🟢</div>
+      <div class="ch-name">WhatsApp</div>
+      <div class="ch-note">Up to 4096 chars / msg</div>
+    </div>
+    <div class="ch-card">
+      <div class="ch-icon">📘</div>
+      <div class="ch-name">Facebook</div>
+      <div class="ch-note">Messenger · up to 2000 chars</div>
+    </div>
+    <div class="ch-card">
+      <div class="ch-icon">📸</div>
+      <div class="ch-name">Instagram</div>
+      <div class="ch-note">DM webhook integration</div>
+    </div>
+    <div class="ch-card">
+      <div class="ch-icon">🌐</div>
+      <div class="ch-name">Web Chat</div>
+      <div class="ch-note">Website widget embed</div>
+    </div>
+  </div>
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 2 — TWILIO GATEWAY
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">2</div>
+    Twilio Gateway &mdash; Secure entry point &amp; call authentication
+  </div>
+  <div class="twilio-card">
+    <div class="twilio-icon">☁️</div>
+    <div class="twilio-info">
+      <h3>Twilio Webhook Handler &nbsp;·&nbsp; <code style="font-size:12px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:5px">POST /twilio/voice</code></h3>
+      <p>Every inbound call triggers this webhook. Twilio streams real-time audio over a persistent WebSocket connection.</p>
+      <div class="security-note">
+        🔒 <strong>Security first:</strong> Every request is verified with <strong>HMAC-SHA1 signature</strong> against your Twilio auth token. Invalid requests are blocked immediately (HTTP 403) before any processing.
+      </div>
+    </div>
+    <div class="twilio-chips">
+      <div class="twilio-chip">✅ Signature validated</div>
+      <div class="twilio-chip">📊 Concurrency tracked</div>
+      <div class="twilio-chip">🔄 Status callbacks</div>
+      <div class="twilio-chip">📼 Recording + Voicemail</div>
+    </div>
+  </div>
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 3 — ROUTING DECISION
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">3</div>
+    Call Routing Decision &mdash; Smart routing based on office hours, holidays &amp; capacity
+  </div>
+  <div class="routing-grid">
+
+    <div class="route-card open">
+      <div class="route-badge badge-green">✅ OFFICE OPEN + AVAILABLE</div>
+      <div class="route-title">AI Voice Agent</div>
+      <ul class="route-list">
+        <li><span class="dot-green"></span> Monday–Friday office hours</li>
+        <li><span class="dot-green"></span> Not a US federal holiday</span></li>
+        <li><span class="dot-green"></span> Under 10 concurrent calls</li>
+        <li><span class="dot-green"></span> Caller lookup in GHL CRM</li>
+        <li><span class="dot-green"></span> TwiML <code style="font-size:10px">&lt;Stream&gt;</code> → WebSocket pipeline</li>
+        <li><span class="dot-green"></span> Returning callers greeted by name</li>
+      </ul>
+    </div>
+
+    <div class="route-card full">
+      <div class="route-badge badge-amber">⚠️ AT CAPACITY (10 calls)</div>
+      <div class="route-title">DTMF IVR Menu</div>
+      <ul class="route-list">
+        <li><span class="dot-amber"></span> Press 1 — New consultation</li>
+        <li><span class="dot-amber"></span> Press 2 — Case status update</li>
+        <li><span class="dot-amber"></span> Press 0 — Front desk (transfer)</li>
+        <li><span class="dot-amber"></span> Callback request queue</li>
+        <li><span class="dot-amber"></span> Background worker dials back</li>
+      </ul>
+    </div>
+
+    <div class="route-card hours">
+      <div class="route-badge badge-red">🌙 AFTER HOURS / HOLIDAY</div>
+      <div class="route-title">After-Hours &amp; Voicemail</div>
+      <ul class="route-list">
+        <li><span class="dot-red"></span> After-hours greeting played</li>
+        <li><span class="dot-red"></span> Voicemail recording offered</li>
+        <li><span class="dot-red"></span> Transcription via GPT-4o</li>
+        <li><span class="dot-red"></span> Emergency? → on-call attorney</li>
+        <li><span class="dot-red"></span> Follow-up SMS next morning</li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+<!-- arrow with label -->
+<div class="arrow-row">
+  <div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+  <div class="arrow-label">Primary path: AI Agent via WebSocket</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 4 — REAL-TIME AI VOICE PIPELINE
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">4</div>
+    Real-Time AI Voice Pipeline &mdash; The core engine (runs for every spoken word)
+  </div>
+  <div class="rt-outer">
+    <div class="rt-header">
+      <h2>⚡ Sub-second latency loop — Twilio WebSocket at <code style="background:#1e293b;padding:2px 8px;border-radius:5px;font-size:11px">/ws/call</code></h2>
+      <p>Every audio packet from the caller flows LEFT → CENTER → RIGHT and the voice response streams back in real-time</p>
+    </div>
+
+    <div class="rt-grid">
+
+      <!-- ── LEFT: AUDIO IN ── -->
+      <div class="rt-col">
+        <div class="rt-col-header col-in">🎙️ Audio In — Caller's Voice</div>
+
+        <div class="rt-block blk-twilio-in">
+          <div class="rt-block-title">☁️ Twilio Media Stream</div>
+          <div class="rt-block-body">
+            <span>Format: <strong style="color:#e2e8f0">mulaw 8kHz</strong></span>
+            <span>Encoding: <strong style="color:#e2e8f0">Base64</strong> over WebSocket JSON</span>
+            <span class="detail">~20ms audio chunks, continuously streamed</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-twilio-in" style="background:#172033;border-color:#2563eb22">
+          <div class="rt-block-title" style="color:#93c5fd">🔄 Audio Conversion</div>
+          <div class="rt-block-body" style="color:#7dd3fc">
+            <span>Base64 decode → raw bytes</span>
+            <span>mulaw → linear16 PCM</span>
+            <span><strong style="color:#93c5fd">8kHz → 16kHz</strong> upsample (scipy)</span>
+            <span class="detail" style="color:#3b82f6">Runs in asyncio thread pool</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-deepgram">
+          <div class="rt-block-title">🎤 Deepgram STT</div>
+          <div class="rt-block-body">
+            <span><strong style="color:#e0f2fe">Model:</strong> nova-3 (lowest latency)</span>
+            <span><strong style="color:#e0f2fe">Language:</strong> multi (EN + ES auto)</span>
+            <span><strong style="color:#e0f2fe">Endpointing:</strong> 200ms silence</span>
+            <span><strong style="color:#e0f2fe">VAD Events:</strong> SpeechStarted ✓</span>
+            <span class="detail" style="color:#164e63">smart_format · punctuation · paragraphs</span>
+          </div>
+        </div>
+
+        <div class="barge-note">
+          ⚡ <strong>Barge-in Detection</strong><br>
+          When caller speaks mid-response, <code>SpeechStarted</code> event immediately aborts the TTS stream — caller is never talked over
+        </div>
+      </div>
+
+      <!-- ── CENTER ARROW ── -->
+      <div class="rt-harrow">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div style="width:2px;height:28px;background:#334155"></div>
+          <div style="font-size:9px;color:#475569;text-align:center;background:#1e293b;padding:3px 6px;border-radius:5px;border:1px solid #334155">transcript</div>
+          <div style="width:2px;height:10px;background:#334155"></div>
+          <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #475569"></div>
+        </div>
+      </div>
+
+      <!-- ── CENTER: AI CORE ── -->
+      <div class="rt-col">
+        <div class="rt-col-header col-ai">🧠 AI Core — Intelligence Engine</div>
+
+        <div class="rt-block blk-redis">
+          <div class="rt-block-title">🗂️ Conversation State (Redis)</div>
+          <div class="rt-block-body">
+            <span>Key: <code style="color:#fbbf24">conversation:{call_sid}</code></span>
+            <span>TTL: <strong style="color:#fde68a">48 hours</strong></span>
+            <span>Stores: phase, language, turns, 18+ intake fields, urgency score, lead score</span>
+            <span class="detail" style="color:#713f12">Caller lookup: Redis cache → GHL CRM</span>
+          </div>
+          <div class="phases-row">
+            <span class="phase-chip active">GREETING</span>
+            <span class="phase-chip">ID</span>
+            <span class="phase-chip">TRIAGE</span>
+            <span class="phase-chip">INTAKE</span>
+            <span class="phase-chip">PITCH</span>
+            <span class="phase-chip">BOOKING</span>
+            <span class="phase-chip">CONFIRM</span>
+            <span class="phase-chip">CLOSE</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-gpt">
+          <div class="rt-block-title">🤖 GPT-4o (OpenAI)</div>
+          <div class="rt-block-body">
+            <span><strong style="color:#bbf7d0">Streaming completions</strong> (tokens flow live)</span>
+            <span>System prompt: <strong style="color:#bbf7d0">Sofia</strong> (EN/ES, 1024+ tokens)</span>
+            <span>Prompt caching: prefix cached across all calls</span>
+            <span>Max tokens per phase: 75–250 (keeps replies short)</span>
+            <span>Context: last 6 turns + GPT-4o summary of older turns</span>
+            <span class="detail" style="color:#166534">Intent signals embedded in output text</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-intake-flow">
+          <div class="rt-block-title">📋 Intake Engine</div>
+          <div class="rt-block-body">
+            <span>18+ structured intake questions</span>
+            <span><strong style="color:#fde68a">Smart skipping:</strong> pre-filled fields auto-skipped</span>
+            <span><strong style="color:#fde68a">Conditional:</strong> questions gated by urgency level</span>
+            <span>Full name · DOB · immigration status</span>
+            <span>Case type · court dates · prior history</span>
+            <span class="detail" style="color:#713f12">GPT-4o extracts fields from free speech post-call</span>
+          </div>
+        </div>
+
+        <div class="urgent-wrapper">
+          <div class="blk-urgency">
+            <div class="rt-block-title">
+              ⚡ Urgency Classifier &nbsp;<span class="async-badge">ASYNC — runs while TTS plays</span>
+            </div>
+            <div class="rt-block-body" style="color:#9a3412">
+              GPT-4o function calling · Score 0–10<br>
+              <strong style="color:#fb923c">9–10 EMERGENCY:</strong> detained / deportation → transfer now<br>
+              <strong style="color:#fb923c">6–8 HIGH:</strong> court in &lt;30 days → callback callback<br>
+              <strong style="color:#fb923c">3–5 MEDIUM:</strong> active case → expedite consult<br>
+              <strong style="color:#fb923c">0–2 ROUTINE:</strong> informational → standard intake
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── RIGHT ARROW ── -->
+      <div class="rt-harrow">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div style="width:2px;height:28px;background:#334155"></div>
+          <div style="font-size:9px;color:#475569;text-align:center;background:#1e293b;padding:3px 6px;border-radius:5px;border:1px solid #334155">tokens</div>
+          <div style="width:2px;height:10px;background:#334155"></div>
+          <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #475569"></div>
+        </div>
+      </div>
+
+      <!-- ── RIGHT: AUDIO OUT ── -->
+      <div class="rt-col">
+        <div class="rt-col-header col-out">🔊 Audio Out — AI Voice Response</div>
+
+        <div class="rt-block blk-gpt" style="background:#1a2e1a;border-color:#22c55e55">
+          <div class="rt-block-title" style="color:#86efac">✂️ Sentence Chunker</div>
+          <div class="rt-block-body" style="color:#4ade80">
+            <span>Buffers streaming GPT tokens</span>
+            <span>Flushes on: <strong style="color:#bbf7d0">. ! ? ¿ ¡</strong> + min 20 chars</span>
+            <span class="detail" style="color:#166534">Minimizes first-audio latency to caller</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-elevenlabs">
+          <div class="rt-block-title">🔊 ElevenLabs TTS</div>
+          <div class="rt-block-body">
+            <span><strong style="color:#f3e8ff">Model:</strong> Flash v2.5 (ultra-low latency)</span>
+            <span><strong style="color:#f3e8ff">EN Voice:</strong> Sarah (EXAVITQu4vr4…)</span>
+            <span><strong style="color:#f3e8ff">ES Voice:</strong> Matilda (XrExE9yKIg1W…)</span>
+            <span><strong style="color:#f3e8ff">Output:</strong> ulaw_8000 — no re-encoding!</span>
+            <span>Latency mode: optimize level 3</span>
+            <span class="detail" style="color:#4c1d95">WebSocket stream-input API</span>
+          </div>
+        </div>
+
+        <div class="rt-block blk-twilio-out">
+          <div class="rt-block-title">☁️ Back to Twilio</div>
+          <div class="rt-block-body">
+            <span>mulaw chunks → Base64 encode</span>
+            <span>WebSocket JSON outbound message</span>
+            <span>Twilio decodes and plays to caller</span>
+            <span class="detail">~200–400ms end-to-end latency</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /rt-grid -->
+  </div><!-- /rt-outer -->
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 5 — REAL-TIME ACTIONS (SIGNALS)
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">5</div>
+    Intent Signals &amp; Real-Time Actions &mdash; GPT embeds these codes in its responses
+  </div>
+  <div class="actions-grid">
+
+    <div class="action-card emergency">
+      <div class="action-icon">🚨</div>
+      <div class="action-title">Emergency Transfer</div>
+      <div class="action-code code-red">EMERGENCY_TRANSFER</div>
+      <div class="action-sub">AI detects imminent danger (detained family, deportation order, DV). Instantly warm-transfers to on-call attorney phone number. Urgency alert written to DB.</div>
+    </div>
+
+    <div class="action-card booking">
+      <div class="action-icon">📅</div>
+      <div class="action-title">Book Consultation</div>
+      <div class="action-code code-green">SCHEDULE_NOW</div>
+      <div class="action-sub">Caller is ready to book. Pulls available slots from GHL Calendar (Redis cached 1h). Books in GHL as authoritative + Google Calendar for attorney visibility. Sends SMS confirmation.</div>
+    </div>
+
+    <div class="action-card language">
+      <div class="action-icon">🌐</div>
+      <div class="action-title">Language Switch</div>
+      <div class="action-code code-purple">LANGUAGE_SWITCH_ES / EN</div>
+      <div class="action-sub">Caller switches language mid-call. Instantly swaps voice (Sarah↔Matilda) and system prompt (EN↔ES). Deepgram continues to auto-detect. Seamless bilingual experience.</div>
+    </div>
+
+    <div class="action-card endcall">
+      <div class="action-icon">📵</div>
+      <div class="action-title">End Call</div>
+      <div class="action-code code-gray">END_CALL</div>
+      <div class="action-sub">Graceful close triggered by AI when conversation is complete. Plays farewell message, drains TTS buffer, closes Deepgram connection, triggers post-call pipeline.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 6 — POST-CALL PIPELINE
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">6</div>
+    Post-Call Processing &mdash; Runs immediately after the call ends
+  </div>
+  <div class="postcall-grid">
+
+    <div class="pc-card">
+      <div class="pc-icon">🧮</div>
+      <div class="pc-title">Lead Scorer</div>
+      <div class="pc-sub">GPT-4o scores lead 0–100 across 4 dimensions:</div>
+      <div class="pc-highlight">
+        <span class="chip" style="background:#dbeafe;color:#1e40af">Case Value /25</span>
+        <span class="chip" style="background:#fef3c7;color:#92400e">Urgency /25</span>
+        <span class="chip" style="background:#f0fdf4;color:#166534">Readiness /25</span>
+        <span class="chip" style="background:#f5f3ff;color:#6d28d9">Completeness /25</span>
+      </div>
+      <div class="pc-sub" style="margin-top:6px">Routing: senior / associate / paralegal attorney</div>
+    </div>
+
+    <div class="pc-card">
+      <div class="pc-icon">📊</div>
+      <div class="pc-title">Sentiment Scorer</div>
+      <div class="pc-sub">GPT-4o scores call sentiment −1.0 → +1.0. Detects caller frustration level and confidence flags. Triggers escalation review if score &lt; −0.5.</div>
+    </div>
+
+    <div class="pc-card">
+      <div class="pc-icon">🗃️</div>
+      <div class="pc-title">Structured Intake Extraction</div>
+      <div class="pc-sub">GPT-4o function-calling pass over the full transcript. Normalises free-speech answers into typed fields (dates, enums, booleans). Writes to <code style="font-size:10px">immigration_intake</code> table.</div>
+    </div>
+
+    <div class="pc-card">
+      <div class="pc-icon">🔗</div>
+      <div class="pc-title">CRM Sync &amp; Follow-Up</div>
+      <div class="pc-sub">Pushes all intake fields to GHL custom fields. Tags contact with case type + urgency level. Enqueues SMS follow-up. Cost tracked (Deepgram + OpenAI + ElevenLabs).</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 7 — DATA STORAGE
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">7</div>
+    Data Storage — Three-layer persistence (live → queued → durable)
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 44px 1fr 44px 1.7fr 44px 1fr;gap:0;align-items:start">
+
+    <!-- Redis -->
+    <div class="s-card redis">
+      <div class="s-icon">⚡</div>
+      <div class="s-title">Redis — Live State &amp; Queues</div>
+      <div class="s-item"><span class="s-item-icon">📞</span><span><code>conversation:{call_sid}</code> — live call state (48h)</span></div>
+      <div class="s-item"><span class="s-item-icon">👤</span><span><code>ghl:phone:{phone}</code> — CRM cache (24h)</span></div>
+      <div class="s-item"><span class="s-item-icon">📅</span><span><code>slot_cache:{date}</code> — calendar slots (1h)</span></div>
+      <div class="s-item"><span class="s-item-icon">🔐</span><span><code>dash:session:{token}</code> — dashboard auth (8h)</span></div>
+      <div class="s-item"><span class="s-item-icon">📊</span><span><code>lead_score:{call_sid}</code> — score cache (30m)</span></div>
+      <div class="divider"></div>
+      <div class="s-item" style="font-weight:700;color:#92400e"><span class="s-item-icon">📬</span><span>8 async write queues →</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>db_sync_queue · lead_score_queue</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>sms_queue · voicemail_queue</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>analytics_queue · audit_queue</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>alerts_queue · follow_up_queue</span></div>
+    </div>
+
+    <!-- Arrow -->
+    <div style="display:flex;align-items:center;justify-content:center;padding-top:30px">
+      <div style="text-align:center">
+        <div style="font-size:22px;color:#94a3b8">→</div>
+        <div style="font-size:9px;color:#94a3b8;margin-top:3px">drains</div>
+      </div>
+    </div>
+
+    <!-- DB Worker -->
+    <div class="s-card worker">
+      <div class="s-icon">⚙️</div>
+      <div class="s-title">DB Worker — Background Drainer</div>
+      <div class="s-item"><span class="s-item-icon">🔄</span><span><strong>Always running</strong> background asyncio loop</span></div>
+      <div class="s-item"><span class="s-item-icon">🎯</span><span>Round-robin across all 8 queues</span></div>
+      <div class="s-item"><span class="s-item-icon">⏱️</span><span>BLPOP with 100ms polling interval</span></div>
+      <div class="s-item"><span class="s-item-icon">🛡️</span><span>Failed items → <code>dlq:{queue}</code> dead-letter</span></div>
+      <div class="s-item"><span class="s-item-icon">📝</span><span>Writes via Supabase REST client</span></div>
+      <div class="s-item"><span class="s-item-icon">🔃</span><span>Upsert semantics (safe re-delivery)</span></div>
+      <div class="divider"></div>
+      <div class="s-item"><span class="s-item-icon">💰</span><span>Cost tracker: Deepgram $0.0043/min</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>OpenAI $2.50/$10 / 1M tokens</span></div>
+      <div class="s-item"><span class="s-item-icon">  </span><span>ElevenLabs $0.30 / 1K chars</span></div>
+    </div>
+
+    <!-- Arrow -->
+    <div style="display:flex;align-items:center;justify-content:center;padding-top:30px">
+      <div style="text-align:center">
+        <div style="font-size:22px;color:#94a3b8">→</div>
+        <div style="font-size:9px;color:#94a3b8;margin-top:3px">writes</div>
+      </div>
+    </div>
+
+    <!-- PostgreSQL -->
+    <div class="s-card db">
+      <div class="s-icon">🗄️</div>
+      <div class="s-title">PostgreSQL / Supabase — 12 Tables</div>
+      <div class="db-chips">
+        <div class="db-chip">👤 clients</div>
+        <div class="db-chip">📞 conversations</div>
+        <div class="db-chip">📋 immigration_intake</div>
+        <div class="db-chip">💬 conversation_messages</div>
+        <div class="db-chip">📊 call_logs</div>
+        <div class="db-chip">🏆 lead_scores</div>
+        <div class="db-chip">📅 appointments</div>
+        <div class="db-chip">🚨 urgency_alerts</div>
+        <div class="db-chip">📁 document_checklists</div>
+        <div class="db-chip">📎 referral_tracking</div>
+        <div class="db-chip">🎤 voicemails</div>
+        <div class="db-chip">📲 callback_queue</div>
+      </div>
+      <div class="divider"></div>
+      <div class="s-item"><span class="s-item-icon">🔐</span><span>DOB &amp; A-numbers encrypted at rest (pgcrypto)</span></div>
+      <div class="s-item"><span class="s-item-icon">🆔</span><span>UUID primary keys throughout</span></div>
+      <div class="s-item"><span class="s-item-icon">🕐</span><span>All timestamps UTC with timezone</span></div>
+      <div class="s-item"><span class="s-item-icon">🌍</span><span>pgvector + uuid-ossp extensions</span></div>
+    </div>
+
+    <!-- Arrow -->
+    <div style="display:flex;align-items:center;justify-content:center;padding-top:30px">
+      <div style="text-align:center">
+        <div style="font-size:22px;color:#94a3b8">⇄</div>
+        <div style="font-size:9px;color:#94a3b8;margin-top:3px">sync</div>
+      </div>
+    </div>
+
+    <!-- GHL CRM -->
+    <div class="s-card crm">
+      <div class="s-icon">🏢</div>
+      <div class="s-title">GoHighLevel CRM</div>
+      <div class="s-item"><span class="s-item-icon">👤</span><span>Contact create / update per caller</span></div>
+      <div class="s-item"><span class="s-item-icon">🏷️</span><span>Tags: case type + urgency level</span></div>
+      <div class="s-item"><span class="s-item-icon">📅</span><span>Appointments (authoritative copy)</span></div>
+      <div class="s-item"><span class="s-item-icon">📝</span><span>Custom fields: all 18 intake answers</span></div>
+      <div class="s-item"><span class="s-item-icon">🔔</span><span>GHL webhook events → <code>/ghl/*</code></span></div>
+      <div class="s-item"><span class="s-item-icon">⚡</span><span>Rate limit: 100 req/min (token bucket)</span></div>
+      <div class="s-item"><span class="s-item-icon">📱</span><span>SMS reminders via GHL pipeline</span></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- arrow -->
+<div class="arrow-down"><div class="arrow-down-line"></div><div class="arrow-down-head"></div></div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     STAGE 8 — OUTPUTS
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="stage mb-10">
+  <div class="stage-label">
+    <div class="stage-num active">8</div>
+    Outputs &amp; Reporting &mdash; What the firm sees and acts on
+  </div>
+  <div class="outputs-grid">
+
+    <div class="out-card">
+      <div class="out-icon">📊</div>
+      <div class="out-title">Analytics Dashboard</div>
+      <div class="out-sub">Call volume · Bookings · Outcomes · Case types · Lead scores · Client pipeline — live at /dashboard/</div>
+    </div>
+
+    <div class="out-card">
+      <div class="out-icon">📋</div>
+      <div class="out-title">Intake Records</div>
+      <div class="out-sub">Per-caller structured data — case type, urgency, court date, immigration status, completeness %</div>
+    </div>
+
+    <div class="out-card">
+      <div class="out-icon">🚨</div>
+      <div class="out-title">Urgency Alerts</div>
+      <div class="out-sub">EMERGENCY &amp; HIGH cases flagged instantly. On-call attorney notified. Alert record in DB for audit trail.</div>
+    </div>
+
+    <div class="out-card">
+      <div class="out-icon">📱</div>
+      <div class="out-title">SMS / WhatsApp</div>
+      <div class="out-sub">Booking confirmations · Appointment reminders · After-hours follow-ups · Multilingual (EN/ES)</div>
+    </div>
+
+    <div class="out-card">
+      <div class="out-icon">📅</div>
+      <div class="out-title">Consultations Booked</div>
+      <div class="out-sub">GHL Calendar (authoritative) + Google Calendar (attorney visibility). Dual-write with graceful fallback.</div>
+    </div>
+
+    <div class="out-card">
+      <div class="out-icon">💰</div>
+      <div class="out-title">Cost &amp; ROI Tracking</div>
+      <div class="out-sub">Per-call AI cost (Deepgram + OpenAI + ElevenLabs). Lead score → attorney tier routing for revenue optimisation.</div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     RESILIENCE BANNER
+════════════════════════════════════════════════════════════════════════════ -->
+<div style="background:linear-gradient(135deg,#1e293b,#0f172a);border-radius:14px;padding:18px 24px;margin-bottom:20px;display:flex;align-items:center;gap:20px;border:1px solid #334155;">
+  <div style="font-size:32px">🛡️</div>
+  <div>
+    <div style="font-size:14px;font-weight:800;color:#e2e8f0;margin-bottom:4px">Built-in Resilience &amp; Fallbacks</div>
+    <div style="font-size:11px;color:#64748b;line-height:1.6">
+      <strong style="color:#94a3b8">Circuit Breaker</strong> — 3 failures in 60s trips the circuit (30s timeout). Recovers automatically. Pre-recorded filler audio (<em>"one moment please"</em>) plays instantly during outages — no dead air. &nbsp;·&nbsp;
+      <strong style="color:#94a3b8">Retry with backoff</strong> — transient HTTP errors retried up to 2× with exponential backoff. &nbsp;·&nbsp;
+      <strong style="color:#94a3b8">Silence detection</strong> — 15s warning "Are you still there?", 30s hard timeout closes call gracefully. &nbsp;·&nbsp;
+      <strong style="color:#94a3b8">SIGTERM grace period</strong> — 30s drain of active WebSocket calls before shutdown.
+    </div>
+  </div>
+  <div style="margin-left:auto;display:flex;flex-direction:column;gap:8px">
+    <div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);color:#86efac;padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700">✅ Deepgram</div>
+    <div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);color:#86efac;padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700">✅ ElevenLabs</div>
+    <div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);color:#86efac;padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700">✅ OpenAI</div>
+    <div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);color:#86efac;padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700">✅ GHL CRM</div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     LEGEND
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="legend">
+  <span class="legend-title">Legend</span>
+  <div class="legend-item"><div class="ld" style="background:#2563eb"></div>Twilio / Communication</div>
+  <div class="legend-item"><div class="ld" style="background:#0891b2"></div>Deepgram STT</div>
+  <div class="legend-item"><div class="ld" style="background:#16a34a"></div>OpenAI / GPT-4o</div>
+  <div class="legend-item"><div class="ld" style="background:#7c3aed"></div>ElevenLabs TTS</div>
+  <div class="legend-item"><div class="ld" style="background:#b45309"></div>Redis Cache / Queues</div>
+  <div class="legend-item"><div class="ld" style="background:#1d4ed8"></div>PostgreSQL / Supabase</div>
+  <div class="legend-item"><div class="ld" style="background:#a855f7"></div>GoHighLevel CRM</div>
+  <div class="legend-item"><div class="ld" style="background:#6366f1"></div>Dashboard / Outputs</div>
+  <div class="legend-item"><div class="ld" style="background:#ea580c"></div>Urgency / Alerts</div>
+  <div style="margin-left:auto;font-size:11px;color:#94a3b8">IVR Immigration AI Receptionist &nbsp;·&nbsp; Architecture Diagram &nbsp;·&nbsp; March 2026</div>
+</div>
+
+</body>
+</html>

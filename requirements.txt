@@ -1,0 +1,57 @@
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# WebSocket
+websockets>=12.0
+
+# Telephony
+twilio>=9.0.0
+
+# AI services
+deepgram-sdk>=3.0.0,<4.0.0
+openai>=1.0.0
+elevenlabs>=1.0.0
+
+# HTTP client (HTTP/2 for OpenAI connection pooling)
+httpx[http2]>=0.27.0
+
+# Audio processing
+# audioop removed in Python 3.13 — use audioop-lts as drop-in replacement
+audioop-lts>=0.2.1
+scipy>=1.12.0
+numpy>=1.26.0
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+asyncpg>=0.29.0           # async PostgreSQL driver
+psycopg2-binary>=2.9.9    # sync driver for Alembic migrations
+pgvector>=0.3.0           # pgvector Python client (Vector column type)
+
+# Supabase
+supabase>=2.0.0
+
+# Redis
+redis>=5.0.0
+
+# Config
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Twilio signature validation
+cryptography>=42.0.0
+
+# Scheduling / timezone
+# zoneinfo is stdlib in Python 3.9+ — no extra package needed
+# tzdata needed on some Linux environments (Docker)
+tzdata>=2024.1
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0             # also used for test client
+
+# Google Calendar sync
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
