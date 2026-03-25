@@ -124,14 +124,18 @@ async def sync_call_to_crm(
         updates: dict[str, Any] = {}
         if intake.get("email"):
             updates["email"] = intake["email"]
-        if intake.get("full_name"):
-            parts = intake["full_name"].split(None, 1)
+        resolved_name = (
+            intake.get("full_name")
+            or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
+        ).strip()
+        if resolved_name:
+            parts = resolved_name.split(None, 1)
             updates["firstName"] = parts[0]
             if len(parts) > 1:
                 updates["lastName"] = parts[1]
 
         # Map intake fields to GHL custom fields
-        custom: dict[str, str] = {}
+        custom: dict[str, str] = {"sms_consent": "yes"}   # inbound IVR callers give implicit consent
         _intake_to_custom(intake, custom)
         if custom:
             updates["customField"] = custom
@@ -150,18 +154,22 @@ async def sync_call_to_crm(
 
     else:
         # Create new contact
-        phone = state.intake.get("phone") or ""
-        # Get phone from call state
+        phone = state.intake.get("phone") or state.intake.get("caller_phone") or ""
+        resolved_name = (
+            intake.get("full_name")
+            or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
+        ).strip()
         first = ""
         last = ""
-        if intake.get("full_name"):
-            parts = intake["full_name"].split(None, 1)
+        if resolved_name:
+            parts = resolved_name.split(None, 1)
             first = parts[0]
             last = parts[1] if len(parts) > 1 else ""
 
         custom: dict[str, str] = {}
         _intake_to_custom(intake, custom)
 
+        custom["sms_consent"] = "yes"   # inbound IVR callers give implicit consent
         contact = await ghl.create_contact(
             phone=phone,
             first_name=first,

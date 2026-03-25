@@ -158,12 +158,16 @@ async def _handle_db_sync(payload: dict) -> None:
     conv_data: dict[str, Any] = {
         "call_sid": call_sid,
         "language_detected": payload.get("language", "en"),
-        "urgency_score": payload.get("urgency_score", 0),
-        "urgency_label": payload.get("urgency_label", "low"),
-        "lead_score": payload.get("lead_score", -1),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "channel": "phone",
     }
+    # Only write score fields if this is a real payload (lead_score >= 0).
+    # Skeleton/safety-net payloads use lead_score=-1 as a sentinel — they must
+    # never overwrite real scores already written by _finalize_call.
+    if payload.get("lead_score", -1) >= 0:
+        conv_data["lead_score"] = payload["lead_score"]
+        conv_data["urgency_score"] = payload.get("urgency_score", 0)
+        conv_data["urgency_label"] = payload.get("urgency_label", "low")
     # Only write appointment/transfer fields when present — never overwrite with NULL
     # (skeleton and safety-net payloads don't carry these, and would clobber real data)
     if payload.get("scheduled_at"):
@@ -175,7 +179,11 @@ async def _handle_db_sync(payload: dict) -> None:
     if phone:
         conv_data["caller_phone"] = phone
     if intake.get("full_name"):
-        conv_data["caller_name"] = intake.get("full_name")
+        conv_data["caller_name"] = intake["full_name"]
+    elif intake.get("first_name") or intake.get("last_name"):
+        conv_data["caller_name"] = " ".join(
+            filter(None, [intake.get("first_name"), intake.get("last_name")])
+        ).strip() or None
     if call_outcome:
         conv_data["call_outcome"] = call_outcome
     if duration_seconds is not None:
@@ -195,25 +203,39 @@ async def _handle_db_sync(payload: dict) -> None:
 
     # 3. Insert immigration intake data
     if intake:
+        # Resolve full_name from parts if top-level key missing
+        _resolved_full_name = (
+            intake.get("full_name")
+            or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")])).strip()
+            or None
+        )
         intake_row: dict[str, Any] = {
             "call_sid": call_sid,
             "caller_phone": phone or None,
-            "full_name": intake.get("full_name"),
+            "full_name": _resolved_full_name,
             "country_of_birth": intake.get("country_of_birth"),
             "nationality": intake.get("nationality"),
             "current_immigration_status": intake.get("current_immigration_status"),
             "case_type": intake.get("case_type"),
-            "entry_date_us": intake.get("entry_date_us") or None,
+            "entry_date_us": _safe_date(intake.get("entry_date_us")),
             "prior_applications": _bool_str(intake.get("prior_applications")),
             "has_attorney": _bool_str(intake.get("has_attorney")),
             "urgency_reason": intake.get("urgency_reason"),
             "preferred_language": intake.get("preferred_language", payload.get("language", "en")),
             "preferred_contact_time": intake.get("preferred_contact_time"),
-            "email": intake.get("email"),
+            "email": _safe_email(intake.get("email")),
             "prior_deportation": _bool_str(intake.get("prior_deportation")),
-            "criminal_history": _bool_str(intake.get("criminal_history")),
+            # Accept both current name and legacy alias from old extraction prompt
+            "criminal_history": _bool_str(
+                intake.get("criminal_history") if intake.get("criminal_history") is not None
+                else intake.get("has_criminal_record")
+            ),
             "employer_sponsor": _bool_str(intake.get("employer_sponsor")),
-            "family_in_us": _bool_str(intake.get("family_in_us")),
+            # Accept both current name and legacy alias
+            "family_in_us": _bool_str(
+                intake.get("family_in_us") if intake.get("family_in_us") is not None
+                else intake.get("us_family_connections")
+            ),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         # Remove None values to avoid overwriting existing data
@@ -524,4 +546,31 @@ def _bool_str(value: Any) -> bool | None:
         return True
     if s in ("no", "false", "0"):
         return False
+    return None
+
+
+def _safe_date(value: Any) -> str | None:
+    """Return ISO date string (YYYY-MM-DD) only if value matches a date pattern."""
+    import re
+    if not value or not isinstance(value, str):
+        return None
+    v = value.strip()
+    # Accept YYYY-MM-DD strictly (PostgreSQL date type)
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', v):
+        return v
+    # Accept common alternate formats (MM/DD/YYYY, DD/MM/YYYY) and normalise
+    m = re.match(r'^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$', v)
+    if m:
+        return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    return None
+
+
+def _safe_email(value: Any) -> str | None:
+    """Return value only if it looks like a valid email address."""
+    import re
+    if not value or not isinstance(value, str):
+        return None
+    v = value.strip()
+    if re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', v):
+        return v
     return None

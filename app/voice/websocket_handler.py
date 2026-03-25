@@ -41,7 +41,8 @@ from app.voice.audio_utils import (
     elevenlabs_to_twilio_payload,
 )
 from app.voice.stt_deepgram import DeepgramSTT
-from app.voice.tts_elevenlabs import ElevenLabsTTS
+from app.voice.tts_elevenlabs import ElevenLabsTTS  # noqa: F401 — re-enable when ElevenLabs credits restored
+from app.voice.tts_openai_fallback import OpenAIFallbackTTS as ElevenLabsTTS  # TEMP: OpenAI TTS fallback
 from app.agent.llm_agent import ImmigrationAgent, ConversationPhase
 from app.voice.conversation_state import CallState, load_call_state, save_call_state
 from app.voice.context_manager import ContextManager
@@ -177,7 +178,7 @@ async def _run_call(websocket: WebSocket) -> None:
             caller_name=caller_name,
             returning_client=returning,
         )
-        session.tts = ElevenLabsTTS(language=session.language, call_sid=session.call_sid)
+        session.tts = ElevenLabsTTS(language=session.language, call_sid=session.call_sid)  # noqa: E501
 
         async def on_transcript(text: str, confidence: float, detected_lang: str) -> None:
             # Discard transcripts that arrive while the agent is speaking — this is
@@ -242,12 +243,12 @@ async def _run_call(websocket: WebSocket) -> None:
             await _play_greeting(session)
 
             audio_task = asyncio.create_task(_receive_audio_loop(session))
-            llm_task = asyncio.create_task(_llm_tts_loop(session))
+            llm_task = asyncio.create_task(_llm_tts_loop(session, redis))
             timeout_task = asyncio.create_task(_duration_guard(session))
 
             done, pending = await asyncio.wait(
                 [audio_task, llm_task, timeout_task],
-                return_when=asyncio.FIRST_EXCEPTION,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             for t in pending:
                 t.cancel()
@@ -311,7 +312,7 @@ async def _receive_audio_loop(session: CallSession) -> None:
             logger.error(f"[{session.call_sid}] Audio receive error: {exc}", exc_info=True)
 
 
-async def _llm_tts_loop(session: CallSession) -> None:
+async def _llm_tts_loop(session: CallSession, redis) -> None:
     """
     Main response loop: dequeue caller transcripts → LLM → TTS → Twilio.
     """
@@ -540,13 +541,23 @@ async def _stream_tts_to_twilio(session: CallSession, audio_gen) -> None:
             if not session._call_active:
                 break
             b64_audio = elevenlabs_to_twilio_payload(mulaw_chunk)
-            await session.ws.send_text(json.dumps({
-                "event": "media",
-                "streamSid": session.stream_sid,
-                "media": {"payload": b64_audio},
-            }))
+            try:
+                await session.ws.send_text(json.dumps({
+                    "event": "media",
+                    "streamSid": session.stream_sid,
+                    "media": {"payload": b64_audio},
+                }))
+            except Exception as send_exc:
+                # WebSocket closed mid-stream — mark call ended and stop sending
+                logger.warning(
+                    f"[{session.call_sid}] WebSocket send failed during TTS — "
+                    f"treating as disconnect: {send_exc}"
+                )
+                session._call_active = False
+                break
     except Exception as exc:
         logger.error(f"[{session.call_sid}] TTS→Twilio error: {exc}", exc_info=True)
+        session._call_active = False
     finally:
         session._is_speaking = False
 
@@ -625,9 +636,8 @@ async def _handle_emergency_transfer(session: CallSession) -> None:
 
 async def _handle_schedule_now(session: CallSession, redis) -> None:
     """Present available slots and book an appointment when caller is ready."""
-    if not session.ghl_contact_id:
-        logger.info(f"[{session.call_sid}] SCHEDULE_NOW — no GHL contact yet, skipping calendar")
-        return
+    # Note: we proceed even if ghl_contact_id is not yet set — the contact will be
+    # created eagerly in _handle_booking_confirmed right before the GHL booking call.
 
     try:
         from app.scheduling.calendar_service import get_available_slots, format_slots_for_speech
@@ -674,8 +684,27 @@ async def _handle_booking_confirmed(session: CallSession, confirm_iso: str, redi
     and if none are left we re-fetch live availability and offer a fresh choice.
     """
     if not session.state or not session.ghl_contact_id:
-        logger.warning(f"[{session.call_sid}] CONFIRM_SLOT received but missing state/contact_id")
-        return
+        # For new callers the GHL contact isn't created until _finalize_call.
+        # Eagerly create/sync it now so we have a contact_id for the GHL booking.
+        if session.state and not session.ghl_contact_id:
+            logger.info(f"[{session.call_sid}] CONFIRM_SLOT: no GHL contact yet — eager-creating contact")
+            try:
+                from app.crm.contact_manager import sync_call_to_crm
+                resolved = await sync_call_to_crm(
+                    state=session.state,
+                    ghl_contact_id=None,
+                    lead_score=0,
+                    redis=redis,
+                )
+                if resolved:
+                    session.ghl_contact_id = resolved
+                    logger.info(f"[{session.call_sid}] Eager GHL contact created: {resolved}")
+            except Exception as exc:
+                logger.error(f"[{session.call_sid}] Eager CRM sync failed: {exc}")
+
+        if not session.state or not session.ghl_contact_id:
+            logger.warning(f"[{session.call_sid}] CONFIRM_SLOT received but missing state/contact_id")
+            return
 
     pending_full = session.state.intake.get("_pending_slots_full", [])
     if not pending_full:
@@ -821,10 +850,14 @@ async def _finalize_call(session: CallSession, redis) -> None:
         except Exception as exc:
             logger.error(f"[{session.call_sid}] Intake extraction failed: {exc}")
 
-    # Merge LLM-extracted intake into CallState
+    # Merge LLM-extracted intake into CallState.
+    # LLM GPT-4o extraction (JSON mode) is authoritative — it overwrites any
+    # fast-path heuristic values stored during the call (e.g. "Yes." stored as
+    # full_name from the caller's first utterance).  Private keys starting with
+    # "_" (slot scheduling state) are never overwritten.
     if session.state and intake_data:
         for k, v in intake_data.items():
-            if v and k not in session.state.intake:
+            if v is not None and not k.startswith("_"):
                 session.state.intake[k] = v
 
     # Lead scoring (post-call, non-blocking best-effort)
@@ -841,12 +874,15 @@ async def _finalize_call(session: CallSession, redis) -> None:
     # CRM sync (GHL + Supabase queue)
     if session.state:
         try:
-            await sync_call_to_crm(
+            resolved_contact_id = await sync_call_to_crm(
                 state=session.state,
                 ghl_contact_id=session.ghl_contact_id,
                 lead_score=lead_score,
                 redis=redis,
             )
+            # Capture newly-created contact ID so the SMS check below can use it
+            if resolved_contact_id and not session.ghl_contact_id:
+                session.ghl_contact_id = resolved_contact_id
         except Exception as exc:
             logger.error(f"[{session.call_sid}] CRM sync failed: {exc}")
 

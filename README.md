@@ -24,13 +24,13 @@ A fully automated AI phone receptionist built with **Python/FastAPI**. Handles i
 | Backend | Python 3.12 + FastAPI |
 | STT | Deepgram nova-3 (streaming WebSocket) |
 | LLM | OpenAI GPT-4o (streaming completions) |
-| TTS | ElevenLabs Flash v2.5 (streaming WebSocket) |
+| TTS | ElevenLabs Flash v2.5 (streaming) · OpenAI TTS-1 (fallback) |
 | Telephony | Twilio (Media Streams, SMS, Conversations) |
 | CRM | GoHighLevel REST API |
 | Calendar | GoHighLevel Calendar + Google Calendar (dual-sync) |
 | Database | Supabase / PostgreSQL 16 (pgvector, pgcrypto) |
 | Cache | Redis 7 |
-| Containers | Docker + docker-compose |
+| Containers | Docker + docker-compose (Redis only; DB is Supabase) |
 
 **Target latency:** 1.0–1.5s end-to-end (end of speech → first audio byte)
 
@@ -107,16 +107,16 @@ IVR_Immigration/
 ### 1. Clone and configure
 
 ```bash
-git clone <repo>
-cd IVR_Immigration
+git clone https://github.com/spdecryptcode/AI-Receptionist-for-Immigration-Law-Offices-Multi-Agent-Booking-System.git
+cd AI-Receptionist-for-Immigration-Law-Offices-Multi-Agent-Booking-System
 cp .env.example .env
 # Fill in all values in .env
 ```
 
-### 2. Start services
+### 2. Start Redis
 
 ```bash
-docker-compose up -d   # PostgreSQL 16 + Redis 7
+docker-compose up -d   # Redis 7
 ```
 
 ### 3. Install dependencies
@@ -126,25 +126,24 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Run migrations
+### 4. Start the server
 
 ```bash
-alembic upgrade head
+make run
+# or: uvicorn app.main:app --reload --port 3000
 ```
 
-### 5. Start the server
-
-```bash
-uvicorn app.main:app --reload --port 3000
-```
-
-### 6. Expose via ngrok (for Twilio webhooks)
+### 5. Expose via ngrok (for Twilio webhooks)
 
 ```bash
 ngrok http 3000
 # Set TWILIO_WEBHOOK_URL=https://xxxx.ngrok.io in .env
-# Configure Twilio voice webhook: POST https://xxxx.ngrok.io/webhooks/twilio/voice
+# Configure Twilio voice webhook: POST https://xxxx.ngrok.io/twilio/voice
 ```
+
+> **Database**: All runtime data is stored in **Supabase** — no local PostgreSQL needed.
+> Create the tables by running the SQL from `app/database/migrations/` against your Supabase project,
+> or use the Supabase dashboard to apply the schema.
 
 ---
 
@@ -172,6 +171,7 @@ Key variables to configure before running:
 - `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_EN`, `ELEVENLABS_VOICE_ID_ES`
 - `GHL_API_KEY`, `GHL_LOCATION_ID`, `GHL_CALENDAR_ID`, `GHL_WEBHOOK_SECRET`
 - `GOOGLE_SERVICE_ACCOUNT_KEY`
-- `DATABASE_URL`, `REDIS_URL`
+- `SUPABASE_URL`, `SUPABASE_ANON_KEY`
+- `REDIS_URL`
 - `OFFICE_HOURS_START`, `OFFICE_HOURS_END`, `OFFICE_TIMEZONE`
 - `ONCALL_ATTORNEY_PHONE`

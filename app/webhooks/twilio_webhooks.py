@@ -102,25 +102,6 @@ async def inbound_voice(request: Request):
     to_number = params.get("To", settings.twilio_phone_number)
     logger.info(f"Inbound call {call_sid} from {from_number}")
 
-    # Write a skeleton conversations row immediately so every call is captured,
-    # even if it ends before the WebSocket pipeline completes.
-    try:
-        redis = get_redis_client()
-        skeleton = json.dumps({
-            "call_sid": call_sid,
-            "language": "en",
-            "lead_score": -1,
-            "urgency_score": 0,
-            "urgency_label": "low",
-            "intake": {"caller_phone": from_number},
-            "scheduled_at": None,
-            "appointment_id": None,
-            "transferred_at": None,
-        })
-        asyncio.create_task(redis.rpush("db_sync_queue", skeleton))
-    except Exception as _e:
-        logger.warning(f"[{call_sid}] Failed to queue skeleton conversations row: {_e}")
-
     twiml_str = route_inbound_call(
         call_sid=call_sid,
         from_number=from_number,
@@ -158,24 +139,27 @@ async def call_status_callback(request: Request):
         logger.info(f"Queuing callback for {from_number} ({call_status})")
         await redis.rpush("callback_queue", f"{from_number}:{call_sid}:{call_status}")
 
-    # Safety-net: ensure a conversations row exists for every completed call.
-    # The full pipeline writes its own row; this upsert only fills gaps
-    # (e.g. caller hung up before WebSocket start event).
+    # Safety-net: ensure a conversations row exists for every completed call
+    # where the WebSocket pipeline never ran (e.g. caller hung up immediately).
+    # Skip if _finalize_call already ran and set status="ended" in Redis —
+    # in that case the real full-data row is already written.
     if call_status == "completed" and call_sid:
         try:
-            payload = json.dumps({
-                "call_sid": call_sid,
-                "language": "en",
-                "lead_score": -1,
-                "urgency_score": 0,
-                "urgency_label": "low",
-                "intake": {"caller_phone": from_number},
-                "scheduled_at": None,
-                "appointment_id": None,
-                "transferred_at": None,
-                "duration_seconds": int(duration),
-            })
-            await redis.rpush("db_sync_queue", payload)
+            existing_status = await redis.hget(f"call:{call_sid}", "status")
+            if existing_status not in (b"ended", "ended"):
+                payload = json.dumps({
+                    "call_sid": call_sid,
+                    "language": "en",
+                    "lead_score": -1,
+                    "urgency_score": 0,
+                    "urgency_label": "low",
+                    "intake": {"caller_phone": from_number},
+                    "scheduled_at": None,
+                    "appointment_id": None,
+                    "transferred_at": None,
+                    "duration_seconds": int(duration),
+                })
+                await redis.rpush("db_sync_queue", payload)
         except Exception as _e:
             logger.warning(f"[{call_sid}] Failed to queue safety-net conversations row: {_e}")
 

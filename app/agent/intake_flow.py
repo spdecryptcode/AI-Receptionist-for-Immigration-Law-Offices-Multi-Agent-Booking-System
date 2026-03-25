@@ -222,6 +222,8 @@ def extract_field_from_response(field: str, text: str) -> str | None:
     if not text or len(text) < 2:
         return None
 
+    import re as _re
+
     # For yes/no fields, normalise to "yes" / "no"
     yn_fields = {"prior_applications", "prior_deportation", "criminal_history",
                  "has_attorney", "employer_sponsor", "family_in_us"}
@@ -231,6 +233,36 @@ def extract_field_from_response(field: str, text: str) -> str | None:
             return "yes"
         if any(w in lower for w in ("no", "nope", "negative", "never", "no ")):
             return "no"
+        return None  # Don't store ambiguous text for boolean fields
+
+    # For name fields, validate it actually looks like a name — not a greeting or
+    # short affirmative that the caller says at the start of the call.
+    if field in ("full_name", "first_name", "last_name"):
+        _NON_NAMES = {
+            "yes", "no", "hi", "hello", "hey", "okay", "ok", "sure", "yeah",
+            "yep", "correct", "right", "uh", "um", "hmm", "uhh", "hm", "yea",
+            "yea.", "yes.", "hi.", "hello.", "hey.", "ok.", "sure.", "yeah.",
+            "this is", "it's", "its", "speaking", "it is",
+        }
+        clean = text.strip("., !?").lower()
+        if clean in _NON_NAMES:
+            return None
+        # Must have at least one alphabetic run of 2+ chars (a real word)
+        if not _re.search(r"[a-zA-ZÀ-ú]{2,}", text):
+            return None
+        # Must be at least 3 chars (rejects "I", "A", etc.)
+        if len(text.strip()) < 3:
+            return None
+
+    # For date fields, only accept strings that look like actual dates
+    if field in ("entry_date_us", "date_of_birth"):
+        if not _re.search(r'\d{4}[-/]\d{2}[-/]\d{2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', text):
+            return None
+
+    # For email field, only accept strings that look like an email address
+    if field == "email":
+        if not _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', text.strip()):
+            return None
 
     # For short free-text fields, return as-is if reasonable length
     if len(text) <= 200:

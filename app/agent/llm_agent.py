@@ -277,28 +277,29 @@ class ImmigrationAgent:
         )
 
         extraction_prompt = f"""
-You are a data extraction assistant. Extract immigration intake information from the following conversation transcript. 
-Return ONLY a valid JSON object with the fields you can confidently extract. If a field is uncertain, omit it.
+You are a data extraction assistant. Extract immigration intake information from the following call transcript.
+Return ONLY a valid JSON object. Omit any field you cannot confidently extract — never guess.
+Use null only for fields explicitly mentioned as absent; omit fields that were not discussed.
 
-Fields to extract:
-- full_name (string — caller's full name as spoken, or null)
-- first_name (string or null)
-- last_name (string or null)
-- is_detained (boolean)
-- has_court_date (boolean)
-- court_date (ISO date string YYYY-MM-DD or null)
-- court_location (string or null)
-- visa_expiration_date (ISO date string or null)
-- urgency_level: one of "critical", "high", "medium", "routine"
-- case_type: one of "family_sponsorship", "employment_visa", "asylum", "removal_defense", "daca", "tps", "naturalization", "other"
-- current_immigration_status (string or null)
-- a_number (string, Alien Registration Number, or null)
-- years_in_us (integer or null)
-- has_criminal_record (boolean or null)
-- has_prior_visa_denial (boolean or null)
-- us_family_connections (boolean or null)
-- entry_method: one of "legal_visa", "border_crossing_no_inspection", "visa_overstay", "unknown", or null
-- preferred_language: "en" or "es"
+Fields to extract (use these exact key names):
+- full_name        : caller's full legal name (string, or omit if not given)
+- first_name       : first name only (string, or omit)
+- last_name        : last name only (string, or omit)
+- email            : email address (string, or omit)
+- country_of_birth : country where caller was born (string, or omit)
+- nationality      : current citizenship/nationality (string, or omit)
+- current_immigration_status : e.g. "H1B", "undocumented", "LPR", "F1", etc. (string, or omit)
+- case_type        : one of "family_sponsorship", "employment_visa", "asylum", "removal_defense", "daca", "tps", "naturalization", "other" (or omit)
+- entry_date_us    : date caller first entered the US (ISO date YYYY-MM-DD, or omit)
+- prior_applications : has filed prior USCIS/immigration applications (boolean, or omit)
+- has_attorney     : currently has another immigration attorney (boolean, or omit)
+- urgency_reason   : brief phrase explaining urgency, e.g. "visa expiring", "court date", "detained" (string, or omit)
+- preferred_language : "en" or "es"
+- preferred_contact_time : best time to call back, e.g. "mornings", "afternoons" (string, or omit)
+- prior_deportation : has ever been deported or received removal order (boolean, or omit)
+- criminal_history : has arrest or criminal conviction record (boolean, or omit)
+- employer_sponsor : has employer sponsoring visa/green card (boolean, or omit)
+- family_in_us     : has immediate US citizen or LPR family members (boolean, or omit)
 
 TRANSCRIPT:
 {transcript_summary}
