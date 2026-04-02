@@ -148,11 +148,29 @@ async def _handle_db_sync(payload: dict) -> None:
         pass
 
     # Derive call outcome
-    call_outcome = None
-    if payload.get("transferred_at"):
-        call_outcome = "transferred_to_staff"
-    elif payload.get("scheduled_at"):
-        call_outcome = "booking_made"
+    call_outcome = payload.get("call_outcome") or None
+    if not call_outcome:
+        if payload.get("transferred_at"):
+            call_outcome = "transferred_to_staff"
+        elif payload.get("scheduled_at"):
+            call_outcome = "booking_made"
+    # If still unknown, read the Twilio CallStatus from Redis to infer outcome
+    if not call_outcome and call_sid:
+        try:
+            redis_client = get_redis_client()
+            twilio_status = await redis_client.hget(f"call:{call_sid}", "call_status")
+            if twilio_status:
+                if isinstance(twilio_status, bytes):
+                    twilio_status = twilio_status.decode()
+                if twilio_status in ("no-answer", "busy"):
+                    call_outcome = "callback_requested"
+                elif twilio_status == "completed":
+                    # Distinguish info-only from dropped based on turn count
+                    turn_raw = await redis_client.hget(f"call:{call_sid}", "turn_count")
+                    turns = int(turn_raw) if turn_raw else 0
+                    call_outcome = "info_only" if turns > 2 else "dropped"
+        except Exception:
+            pass
 
     # 2. Upsert conversation record (enriched for Supabase-only dashboard)
     conv_data: dict[str, Any] = {

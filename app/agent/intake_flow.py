@@ -235,23 +235,35 @@ def extract_field_from_response(field: str, text: str) -> str | None:
             return "no"
         return None  # Don't store ambiguous text for boolean fields
 
-    # For name fields, validate it actually looks like a name — not a greeting or
-    # short affirmative that the caller says at the start of the call.
+    # For name fields, strip common preambles then validate it looks like a name.
     if field in ("full_name", "first_name", "last_name"):
         _NON_NAMES = {
             "yes", "no", "hi", "hello", "hey", "okay", "ok", "sure", "yeah",
             "yep", "correct", "right", "uh", "um", "hmm", "uhh", "hm", "yea",
-            "yea.", "yes.", "hi.", "hello.", "hey.", "ok.", "sure.", "yeah.",
-            "this is", "it's", "its", "speaking", "it is",
+            "speaking",
         }
-        clean = text.strip("., !?").lower()
-        if clean in _NON_NAMES:
+        # Strip preambles in a loop — handles "Yes. This is John" → "John"
+        # Compound phrases must come before single words to match greedily.
+        _PREAMBLES = _re.compile(
+            r"^("
+            r"(my name is|this is|i am|i'm|it'?s|the name is|speaking[,]?\s*(this is)?)\s*|"
+            r"(yes|yeah|sure|okay|ok|hi|hello|hey)[,.]?\s*"
+            r")",
+            _re.IGNORECASE,
+        )
+        prev = None
+        while prev != text:
+            prev = text
+            text = _PREAMBLES.sub("", text).strip().strip(".,!?").strip()
+
+        clean = text.lower()
+        if clean in _NON_NAMES or not clean:
             return None
         # Must have at least one alphabetic run of 2+ chars (a real word)
         if not _re.search(r"[a-zA-ZÀ-ú]{2,}", text):
             return None
-        # Must be at least 3 chars (rejects "I", "A", etc.)
-        if len(text.strip()) < 3:
+        # Must be at least 2 chars (rejects "I", "A", etc.)
+        if len(text) < 2:
             return None
 
     # For date fields, only accept strings that look like actual dates

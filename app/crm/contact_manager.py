@@ -109,86 +109,99 @@ async def sync_call_to_crm(
     Also queues the full sync to Supabase via DB worker.
 
     Returns the GHL contact ID (created or existing).
+    GHL operations are best-effort — DB sync always runs even if GHL is down.
     """
+    from app.crm.ghl_client import ghl_is_available  # avoid circular at module level
+
     ghl = get_ghl_client()
     intake = state.intake
+    result_id: str | None = ghl_contact_id
 
-    # Build tags
-    tags = _build_tags(state, lead_score)
-
-    # Build call notes for GHL
-    call_notes = _build_call_notes(state, lead_score)
-
-    if ghl_contact_id:
-        # Update existing contact
-        updates: dict[str, Any] = {}
-        if intake.get("email"):
-            updates["email"] = intake["email"]
-        resolved_name = (
-            intake.get("full_name")
-            or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
-        ).strip()
-        if resolved_name:
-            parts = resolved_name.split(None, 1)
-            updates["firstName"] = parts[0]
-            if len(parts) > 1:
-                updates["lastName"] = parts[1]
-
-        # Map intake fields to GHL custom fields
-        custom: dict[str, str] = {"sms_consent": "yes"}   # inbound IVR callers give implicit consent
-        _intake_to_custom(intake, custom)
-        if custom:
-            updates["customField"] = custom
-
-        if updates:
-            await ghl.update_contact(ghl_contact_id, updates)
-
-        # Apply tags
-        await ghl.add_tags(ghl_contact_id, tags)
-
-        # Add call note
-        await ghl.add_note(ghl_contact_id, call_notes)
-
-        logger.info(f"[{state.call_sid}] GHL contact {ghl_contact_id} updated")
-        result_id = ghl_contact_id
-
-    else:
-        # Create new contact
-        phone = state.intake.get("phone") or state.intake.get("caller_phone") or ""
-        resolved_name = (
-            intake.get("full_name")
-            or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
-        ).strip()
-        first = ""
-        last = ""
-        if resolved_name:
-            parts = resolved_name.split(None, 1)
-            first = parts[0]
-            last = parts[1] if len(parts) > 1 else ""
-
-        custom: dict[str, str] = {}
-        _intake_to_custom(intake, custom)
-
-        custom["sms_consent"] = "yes"   # inbound IVR callers give implicit consent
-        contact = await ghl.create_contact(
-            phone=phone,
-            first_name=first,
-            last_name=last,
-            email=intake.get("email", ""),
-            tags=tags,
-            custom_fields=custom,
-            language=state.language,
+    # ── GHL sync (best-effort — skipped gracefully if credentials are broken) ──
+    if not ghl_is_available():
+        logger.warning(
+            f"[{state.call_sid}] GHL unavailable — skipping CRM sync, "
+            "data saved to Supabase only."
         )
-        if contact:
-            result_id = contact.get("id") or contact.get("contact_id", "")
-            # Cache for this phone
-            await ghl.add_note(result_id, call_notes)
-            logger.info(f"[{state.call_sid}] GHL contact created: {result_id}")
-        else:
-            logger.error(f"[{state.call_sid}] Failed to create GHL contact")
-            result_id = None
+    else:
+        try:
+            # Build tags and call notes
+            tags = _build_tags(state, lead_score)
+            call_notes = _build_call_notes(state, lead_score)
 
-    # Queue Supabase DB sync
+            if ghl_contact_id:
+                # Update existing contact
+                updates: dict[str, Any] = {}
+                if intake.get("email"):
+                    updates["email"] = intake["email"]
+                resolved_name = (
+                    intake.get("full_name")
+                    or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
+                ).strip()
+                if resolved_name:
+                    parts = resolved_name.split(None, 1)
+                    updates["firstName"] = parts[0]
+                    if len(parts) > 1:
+                        updates["lastName"] = parts[1]
+
+                custom: dict[str, str] = {"sms_consent": "yes"}
+                _intake_to_custom(intake, custom)
+                if custom:
+                    updates["customField"] = custom
+
+                if updates:
+                    await ghl.update_contact(ghl_contact_id, updates)
+
+                await ghl.add_tags(ghl_contact_id, tags)
+                await ghl.add_note(ghl_contact_id, call_notes)
+
+                logger.info(f"[{state.call_sid}] GHL contact {ghl_contact_id} updated")
+                result_id = ghl_contact_id
+
+            else:
+                # Create new contact
+                phone = state.intake.get("phone") or state.intake.get("caller_phone") or ""
+                resolved_name = (
+                    intake.get("full_name")
+                    or " ".join(filter(None, [intake.get("first_name"), intake.get("last_name")]))
+                ).strip()
+                first, last = "", ""
+                if resolved_name:
+                    parts = resolved_name.split(None, 1)
+                    first = parts[0]
+                    last = parts[1] if len(parts) > 1 else ""
+
+                custom_new: dict[str, str] = {"sms_consent": "yes"}
+                _intake_to_custom(intake, custom_new)
+
+                contact = await ghl.create_contact(
+                    phone=phone,
+                    first_name=first,
+                    last_name=last,
+                    email=intake.get("email", ""),
+                    tags=tags,
+                    custom_fields=custom_new,
+                    language=state.language,
+                )
+                if contact:
+                    result_id = contact.get("id") or contact.get("contact_id", "")
+                    await ghl.add_note(result_id, call_notes)
+                    logger.info(f"[{state.call_sid}] GHL contact created: {result_id}")
+                else:
+                    logger.warning(
+                        f"[{state.call_sid}] GHL contact creation returned None — "
+                        "call data preserved in Supabase."
+                    )
+                    result_id = None
+
+        except Exception as exc:
+            logger.error(
+                f"[{state.call_sid}] GHL sync failed unexpectedly: {exc} — "
+                "continuing to Supabase sync."
+            )
+            # result_id stays as whatever it was before the error
+
+    # ── Supabase DB sync — always runs ────────────────────────────────────────
     await _queue_db_sync(state, result_id, lead_score, redis)
 
     return result_id

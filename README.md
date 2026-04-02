@@ -1,6 +1,6 @@
 # IVR Immigration — AI Receptionist for Immigration Law Offices
 
-A fully automated AI phone receptionist built with **Python/FastAPI**. Handles inbound calls 24/7 — collects immigration intake data, qualifies leads, books consultations, and transfers urgent cases to attorneys in real time.
+A fully automated conversational AI agent built with **Python/FastAPI**. It handles inbound calls 24/7 — collects immigration intake data, qualifies leads, books consultations, and transfers urgent cases to attorneys in real time.
 
 ---
 

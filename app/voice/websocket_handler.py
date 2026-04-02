@@ -369,7 +369,7 @@ async def _llm_tts_loop(session: CallSession, redis) -> None:
                     log_turn(
                         call_sid=session.call_sid,
                         turn_index=session.state.turn_count,
-                        role="user",
+                        role="caller",
                         text=transcript,
                         phase=session.state.phase.value if session.state.phase else "",
                     ),
@@ -934,6 +934,7 @@ async def _finalize_call(session: CallSession, redis) -> None:
     await redis.hset(f"call:{session.call_sid}", mapping={
         "status": "ended",
         "duration_seconds": int(elapsed),
+        "turn_count": session.state.turn_count if session.state else 0,
     })
     await redis.expire(f"call:{session.call_sid}", 86400)  # 24h TTL
 

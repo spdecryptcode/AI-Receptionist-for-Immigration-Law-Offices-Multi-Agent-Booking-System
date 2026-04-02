@@ -146,10 +146,15 @@ async def health_check():
         pass
 
     status = "ok" if (redis_ok and db_ok) else "degraded"
+
+    from app.crm.ghl_client import ghl_is_available
+    ghl_status = "ok" if ghl_is_available() else "credential_error"
+
     return {
         "status": status,
         "redis": "ok" if redis_ok else "error",
         "db": "ok" if db_ok else "error",
+        "ghl": ghl_status,
         "accepting_connections": _accepting_connections,
     }
 

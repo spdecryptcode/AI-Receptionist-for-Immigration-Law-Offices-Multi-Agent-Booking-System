@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>IVR Immigration AI — System Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #f0f4f8;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-start;
+    min-height: 100vh; padding: 30px 20px;
+  }
+  h1 {
+    font-size: 22px; font-weight: 700; color: #1a3a4a;
+    margin-bottom: 6px; letter-spacing: 0.5px;
+  }
+  .subtitle { font-size: 12px; color: #5a7a8a; margin-bottom: 28px; }
+
+  /* ── canvas ── */
+  .canvas {
+    position: relative;
+    width: 1100px; height: 820px;
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.13);
+    overflow: hidden;
+  }
+
+  /* ── SVG arrows -- sits below nodes ── */
+  .arrow-layer {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* ── Node base ── */
+  .node {
+    position: absolute;
+    border-radius: 14px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    cursor: default;
+    transition: transform .18s, box-shadow .18s;
+    z-index: 2;
+  }
+  .node:hover { transform: translateY(-3px) scale(1.03); box-shadow: 0 10px 28px rgba(0,0,0,0.22); }
+
+  .node .icon { font-size: 26px; line-height: 1; margin-bottom: 5px; }
+  .node .label { font-size: 11px; font-weight: 700; line-height: 1.25; color: #fff; }
+  .node .sub   { font-size: 9px;  font-weight: 400; color: rgba(255,255,255,0.8); margin-top: 3px; line-height: 1.2; }
+
+  /* ── colour themes ── */
+  .teal   { background: linear-gradient(145deg,#1fa89e,#0d7a74); box-shadow: 0 4px 16px rgba(15,120,110,0.38); }
+  .dark   { background: linear-gradient(145deg,#2d4a5e,#1a3040); box-shadow: 0 4px 16px rgba(20,40,60,0.38); }
+  .orange { background: linear-gradient(145deg,#f57c44,#e05a1a); box-shadow: 0 4px 16px rgba(220,80,20,0.38); }
+  .green  { background: linear-gradient(145deg,#3dba7c,#1e8c52); box-shadow: 0 4px 16px rgba(20,130,60,0.35); }
+  .purple { background: linear-gradient(145deg,#7b5ea7,#5038a0); box-shadow: 0 4px 16px rgba(90,50,160,0.35); }
+  .blue   { background: linear-gradient(145deg,#3a7bd5,#1a55b0); box-shadow: 0 4px 16px rgba(30,70,180,0.35); }
+
+  /* ── centre hub ── */
+  .hub {
+    position: absolute;
+    border-radius: 50%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    z-index: 3;
+    box-shadow: 0 6px 30px rgba(15,120,110,0.45);
+    background: radial-gradient(circle at 40% 35%, #1dbfb2, #0a6660);
+    transition: transform .2s, box-shadow .2s;
+    cursor: default;
+  }
+  .hub:hover { transform: scale(1.05); box-shadow: 0 10px 40px rgba(15,120,110,0.55); }
+  .hub .icon  { font-size: 36px; }
+  .hub .label { font-size: 13px; font-weight: 800; color: #fff; margin-top: 4px; line-height: 1.2; }
+  .hub .sub   { font-size: 9px;  color: rgba(255,255,255,0.75); margin-top: 2px; }
+
+  /* ── section badges ── */
+  .badge {
+    position: absolute;
+    background: rgba(240,248,255,0.92);
+    border: 1.5px dashed #b0ccd8;
+    border-radius: 12px;
+    padding: 6px 10px 6px 10px;
+    font-size: 9px; font-weight: 700; color: #3a607a;
+    letter-spacing: 0.6px; text-transform: uppercase;
+    z-index: 1;
+  }
+
+  /* ── small annotation labels on arrows ── */
+  .ann {
+    position: absolute;
+    font-size: 8.5px; font-weight: 600;
+    color: #456070;
+    background: rgba(240,248,255,0.88);
+    padding: 1px 5px; border-radius: 5px;
+    pointer-events: none;
+    z-index: 4;
+    white-space: nowrap;
+  }
+
+  /* ── legend ── */
+  .legend {
+    position: absolute; bottom: 18px; right: 22px;
+    display: flex; gap: 10px; z-index: 5;
+  }
+  .leg-item { display: flex; align-items: center; gap: 5px; font-size: 9px; color: #456070; }
+  .leg-dot  { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── step numbers ── */
+  .step-num {
+    position: absolute; top: -8px; right: -8px;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #f57c44; color: #fff;
+    font-size: 8px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }
+
+  /* ── export toolbar ── */
+  .toolbar {
+    display: flex; gap: 10px; margin-bottom: 18px;
+    align-items: center; flex-wrap: wrap;
+  }
+  .btn {
+    padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.3px;
+    transition: transform .14s, box-shadow .14s;
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
+  .btn-pdf { background: linear-gradient(135deg,#e05a1a,#b03800); color: #fff; }
+  .btn-svg { background: linear-gradient(135deg,#1fa89e,#0d7a74); color: #fff; }
+  .btn-info { background: #f0f6fa; color: #456070; border: 1px solid #c0d8e8; font-weight: 600; }
+
+  /* ── print styles ── */
+  @media print {
+    body { background: #fff; padding: 0; margin: 0; }
+    .toolbar, p.subtitle { display: none; }
+    h1 { font-size: 14px; margin: 6px 0 4px; }
+    .canvas {
+      box-shadow: none;
+      width: 100% !important; height: auto !important;
+      border-radius: 0;
+      page-break-inside: avoid;
+    }
+    @page { size: A3 landscape; margin: 10mm; }
+  }
+</style>
+</head>
+<body>
+<h1>🏛️ IVR Immigration AI Receptionist — System Flow</h1>
+<p class="subtitle">End-to-end call pipeline · FastAPI / Twilio / GPT-4o / ElevenLabs · March 2026</p>
+
+<div class="toolbar">
+  <button class="btn btn-pdf" onclick="window.print()">🖨️ Save as PDF</button>
+  <button class="btn btn-svg" onclick="downloadSVG()">⬇️ Download SVG</button>
+  <span class="btn btn-info">💡 For best PDF: Chrome → Print → Save as PDF → A3 Landscape</span>
+</div>
+
+<script>
+function downloadSVG() {
+  fetch('system_flow_diagram.svg')
+    .then(r => r.text())
+    .then(svg => {
+      const blob = new Blob([svg], {type: 'image/svg+xml;charset=utf-8'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'IVR_Immigration_System_Flow.svg';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    })
+    .catch(() => { window.open('system_flow_diagram.svg'); });
+}
+</script>
+
+<div class="canvas" id="canvas">
+
+  <!-- ─── SVG ARROW LAYER ─────────────────────────────────────── -->
+  <svg class="arrow-layer" id="arrows" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#1fa89e"/>
+      </marker>
+      <marker id="ao" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#f57c44"/>
+      </marker>
+      <marker id="ag" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#3dba7c"/>
+      </marker>
+      <marker id="ab" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#3a7bd5"/>
+      </marker>
+      <marker id="ap" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#8862c4"/>
+      </marker>
+      <marker id="ad" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0,8 3,0 6" fill="#2d4a5e"/>
+      </marker>
+    </defs>
+
+    <!-- Caller → Twilio -->
+    <path d="M 120,135 Q 155,135 175,148" stroke="#1fa89e" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <!-- Twilio → FastAPI (voice webhook) -->
+    <path d="M 270,150 L 330,160" stroke="#1fa89e" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <!-- FastAPI → WebSocket Handler -->
+    <path d="M 420,158 L 480,175" stroke="#1fa89e" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <!-- WebSocket Handler → Deepgram STT (down-left) -->
+    <path d="M 530,240 L 420,290" stroke="#1fa89e" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <!-- Deepgram STT → Hub (center) -->
+    <path d="M 430,340 L 490,382" stroke="#1fa89e" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <!-- Hub → GPT-4o Agent -->
+    <path d="M 622,370 L 700,310" stroke="#f57c44" stroke-width="2.2" fill="none" stroke-dasharray="5,3" marker-end="url(#ao)"/>
+    <!-- GPT-4o Agent → Intake FSM -->
+    <path d="M 790,330 L 830,350" stroke="#f57c44" stroke-width="2" fill="none" marker-end="url(#ao)"/>
+    <!-- Intake FSM → Hub (feedback) -->
+    <path d="M 870,420 L 640,420" stroke="#f57c44" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#ao)"/>
+    <!-- Hub → ElevenLabs TTS -->
+    <path d="M 600,455 L 610,520" stroke="#1fa89e" stroke-width="2.2" fill="none" marker-end="url(#ah)"/>
+    <!-- ElevenLabs TTS → Twilio (audio out) -->
+    <path d="M 565,560 L 235,180" stroke="#1fa89e" stroke-width="1.8" fill="none" stroke-dasharray="6,3" marker-end="url(#ah)"/>
+    <!-- Hub → Calendar Service -->
+    <path d="M 605,420 L 700,480" stroke="#3dba7c" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+    <!-- Calendar Service → GHL CRM -->
+    <path d="M 832,480 L 892,480" stroke="#3dba7c" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+    <!-- GHL CRM → Confirmation SMS -->
+    <path d="M 960,520 L 940,580" stroke="#3dba7c" stroke-width="1.8" fill="none" marker-end="url(#ag)"/>
+    <!-- Hub → Redis Cache -->
+    <path d="M 550,460 L 420,530" stroke="#3a7bd5" stroke-width="2" fill="none" marker-end="url(#ab)"/>
+    <!-- Redis Cache → DB Worker -->
+    <path d="M 330,560 L 270,590" stroke="#3a7bd5" stroke-width="2" fill="none" marker-end="url(#ab)"/>
+    <!-- DB Worker → Supabase/PostgreSQL -->
+    <path d="M 200,636 L 200,680" stroke="#3a7bd5" stroke-width="2" fill="none" marker-end="url(#ab)"/>
+    <!-- Hub → Lead Scorer -->
+    <path d="M 560,460 L 430,570" stroke="#8862c4" stroke-width="1.8" fill="none" stroke-dasharray="4,3" marker-end="url(#ap)"/>
+    <!-- Lead Scorer → GHL CRM (tags) -->
+    <path d="M 450,608 L 870,510" stroke="#8862c4" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#ap)"/>
+    <!-- Hub → Dashboard -->
+    <path d="M 590,380 L 870,290" stroke="#2d4a5e" stroke-width="1.8" fill="none" stroke-dasharray="3,4" marker-end="url(#ad)"/>
+    <!-- Urgency Classifier → Emergency Transfer -->
+    <path d="M 790,200 L 860,210" stroke="#e05a1a" stroke-width="2" fill="none" marker-end="url(#ao)"/>
+    <!-- GPT-4o → Urgency Classifier -->
+    <path d="M 750,280 L 755,240" stroke="#f57c44" stroke-width="1.6" fill="none" marker-end="url(#ao)"/>
+  </svg>
+
+  <!-- ─── SECTION BADGES ─── -->
+  <div class="badge" style="left:60px;top:70px;width:220px;">📞 Inbound Channel</div>
+  <div class="badge" style="left:380px;top:70px;width:260px;">🔊 Voice Pipeline</div>
+  <div class="badge" style="left:680px;top:70px;width:250px;">🧠 AI Brain</div>
+  <div class="badge" style="left:680px;top:440px;width:280px;">📅 Scheduling & CRM</div>
+  <div class="badge" style="left:140px;top:490px;width:280px;">💾 Persistence Layer</div>
+
+  <!-- ─── HUB — centre of diagram ─── -->
+  <div class="hub" style="left:500px;top:355px;width:140px;height:140px;">
+    <div class="icon">☁️</div>
+    <div class="label">FastAPI<br/>Core Engine</div>
+    <div class="sub">WebSocket Handler<br/>uvicorn · port 3000</div>
+  </div>
+
+  <!-- ─── ROW 1 — inbound + pipeline ─── -->
+
+  <!-- Caller -->
+  <div class="node dark" style="left:48px;top:100px;width:90px;height:72px;">
+    <div class="step-num">1</div>
+    <div class="icon">📱</div>
+    <div class="label">Caller</div>
+    <div class="sub">PSTN / Mobile</div>
+  </div>
+
+  <!-- Twilio -->
+  <div class="node teal" style="left:175px;top:116px;width:96px;height:72px;">
+    <div class="step-num">2</div>
+    <div class="icon">📡</div>
+    <div class="label">Twilio</div>
+    <div class="sub">Media Stream<br/>TwiML webhook</div>
+  </div>
+
+  <!-- Call Router -->
+  <div class="node dark" style="left:320px;top:130px;width:100px;height:64px;">
+    <div class="icon">🔀</div>
+    <div class="label">Call Router</div>
+    <div class="sub">Office hrs<br/>24/7 mode</div>
+  </div>
+
+  <!-- WebSocket Handler -->
+  <div class="node teal" style="left:466px;top:144px;width:110px;height:66px;">
+    <div class="step-num">3</div>
+    <div class="icon">🔌</div>
+    <div class="label">WS Handler</div>
+    <div class="sub">ws://.../media<br/>Twilio stream</div>
+  </div>
+
+  <!-- ─── ROW 2 — STT + AI Brain ─── -->
+
+  <!-- Deepgram STT -->
+  <div class="node blue" style="left:330px;top:280px;width:104px;height:76px;">
+    <div class="step-num">4</div>
+    <div class="icon">🎙️</div>
+    <div class="label">Deepgram STT</div>
+    <div class="sub">mulaw → text<br/>500ms endpointing</div>
+  </div>
+
+  <!-- GPT-4o Agent -->
+  <div class="node orange" style="left:688px;top:265px;width:110px;height:80px;">
+    <div class="step-num">5</div>
+    <div class="icon">🤖</div>
+    <div class="label">GPT-4o Agent</div>
+    <div class="sub">LLM streaming<br/>signal filtering</div>
+  </div>
+
+  <!-- Intake FSM -->
+  <div class="node dark" style="left:820px;top:330px;width:110px;height:76px;">
+    <div class="icon">📋</div>
+    <div class="label">Intake FSM</div>
+    <div class="sub">15 fields<br/>phase tracking</div>
+  </div>
+
+  <!-- Urgency Classifier -->
+  <div class="node orange" style="left:706px;top:170px;width:112px;height:66px;">
+    <div class="icon">⚠️</div>
+    <div class="label">Urgency Classifier</div>
+    <div class="sub">GPT-4o mini<br/>0–10 score</div>
+  </div>
+
+  <!-- Emergency Transfer -->
+  <div class="node" style="left:850px;top:174px;width:104px;height:60px;background:linear-gradient(145deg,#e05a1a,#b03800);box-shadow:0 4px 16px rgba(180,50,0,0.38);">
+    <div class="icon">🚨</div>
+    <div class="label">Emergency<br/>Transfer</div>
+    <div class="sub">On-call attorney</div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="node dark" style="left:872px;top:255px;width:104px;height:64px;">
+    <div class="icon">📊</div>
+    <div class="label">Admin Dashboard</div>
+    <div class="sub">Call logs · Auth</div>
+  </div>
+
+  <!-- ─── ROW 3 — TTS + Post-call ─── -->
+
+  <!-- ElevenLabs TTS -->
+  <div class="node teal" style="left:560px;top:505px;width:110px;height:76px;">
+    <div class="step-num">6</div>
+    <div class="icon">🔊</div>
+    <div class="label">ElevenLabs TTS</div>
+    <div class="sub">mulaw stream<br/>barge-in guard</div>
+  </div>
+
+  <!-- Calendar Service -->
+  <div class="node green" style="left:692px;top:452px;width:110px;height:72px;">
+    <div class="icon">📅</div>
+    <div class="label">Calendar Service</div>
+    <div class="sub">Slot cache<br/>Google Cal</div>
+  </div>
+
+  <!-- GHL CRM -->
+  <div class="node green" style="left:878px;top:452px;width:104px;height:72px;">
+    <div class="icon">🏢</div>
+    <div class="label">GHL CRM</div>
+    <div class="sub">Contacts · Tags<br/>Notes · Pipelines</div>
+  </div>
+
+  <!-- Confirmation SMS -->
+  <div class="node green" style="left:892px;top:566px;width:94px;height:66px;">
+    <div class="icon">💬</div>
+    <div class="label">Confirm SMS</div>
+    <div class="sub">TCPA consent<br/>GHL send</div>
+  </div>
+
+  <!-- Redis Cache -->
+  <div class="node blue" style="left:340px;top:508px;width:104px;height:72px;">
+    <div class="icon">⚡</div>
+    <div class="label">Redis Cache</div>
+    <div class="sub">Call state<br/>db_sync_queue</div>
+  </div>
+
+  <!-- Lead Scorer -->
+  <div class="node purple" style="left:380px;top:574px;width:104px;height:68px;">
+    <div class="icon">🎯</div>
+    <div class="label">Lead Scorer</div>
+    <div class="sub">0–100 score<br/>hot/warm/cold</div>
+  </div>
+
+  <!-- DB Worker -->
+  <div class="node blue" style="left:198px;top:560px;width:104px;height:68px;">
+    <div class="icon">🗃️</div>
+    <div class="label">DB Worker</div>
+    <div class="sub">Async persist<br/>queue consumer</div>
+  </div>
+
+  <!-- Supabase / PostgreSQL -->
+  <div class="node dark" style="left:148px;top:660px;width:110px;height:68px;">
+    <div class="icon">🐘</div>
+    <div class="label">Supabase / PG</div>
+    <div class="sub">call_logs · intakes<br/>messages · scores</div>
+  </div>
+
+  <!-- Post-call Analytics -->
+  <div class="node purple" style="left:310px;top:660px;width:120px;height:68px;">
+    <div class="icon">🔬</div>
+    <div class="label">Post-Call Pipeline</div>
+    <div class="sub">Summary · Sentiment<br/>Structured extract</div>
+  </div>
+
+  <!-- arrow annotations -->
+  <div class="ann" style="left:126px;top:122px;">µ-law audio</div>
+  <div class="ann" style="left:286px;top:138px;">TwiML webhook</div>
+  <div class="ann" style="left:424px;top:148px;">WS upgrade</div>
+  <div class="ann" style="left:350px;top:275px;">audio chunks</div>
+  <div class="ann" style="left:460px;top:368px;">transcript</div>
+  <div class="ann" style="left:645px;top:324px;">respond_stream</div>
+  <div class="ann" style="left:730px;top:400px;">CONFIRM_SLOT</div>
+  <div class="ann" style="left:592px;top:490px;">token stream</div>
+  <div class="ann" style="left:336px;top:462px;">µ-law audio out</div>
+  <div class="ann" style="left:646px;top:465px;">book slot</div>
+  <div class="ann" style="left:848px;top:464px;">update contact</div>
+  <div class="ann" style="left:365px;top:530px;">state / queue</div>
+  <div class="ann" style="left:210px;top:540px;">dequeue</div>
+
+  <!-- ─── LEGEND ─── -->
+  <div class="legend">
+    <div class="leg-item"><div class="leg-dot" style="background:#1fa89e;"></div>Voice stream</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#f57c44;"></div>AI / LLM</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#3dba7c;"></div>CRM / Schedule</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#3a7bd5;"></div>Persistence</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#8862c4;"></div>Analytics</div>
+  </div>
+
+</div><!-- /canvas -->
+
+<p style="margin-top:18px;font-size:10px;color:#7a9aaa;">
+  IVR Immigration AI Receptionist &nbsp;·&nbsp; FastAPI + Twilio + Deepgram + GPT-4o + ElevenLabs + GHL CRM &nbsp;·&nbsp; © 2026
+</p>
+</body>
+</html>

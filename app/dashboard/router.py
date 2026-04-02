@@ -110,6 +110,27 @@ async def api_stats(
     return JSONResponse(data)
 
 
+@router.get("/api/transcript/{call_sid}")
+async def api_transcript(
+    call_sid: str,
+    dashboard_session: Optional[str] = Cookie(default=None),
+):
+    if not await _valid_session(dashboard_session):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    loop = asyncio.get_event_loop()
+
+    def _fetch():
+        supabase = get_supabase_client()
+        r = supabase.table("conversation_messages").select(
+            "turn_index,role,content,phase,latency_ms,created_at"
+        ).eq("call_sid", call_sid).order("turn_index").execute()
+        return r.data or []
+
+    messages = await loop.run_in_executor(None, _fetch)
+    return JSONResponse({"call_sid": call_sid, "messages": messages})
+
+
 # ── DB queries ────────────────────────────────────────────────────────────────
 
 async def _fetch_stats() -> dict:
@@ -205,12 +226,19 @@ def _fetch_stats_sync() -> dict:
         ch_counts[ch] = ch_counts.get(ch, 0) + 1
     channels = [{"label": k, "count": v} for k, v in sorted(ch_counts.items(), key=lambda x: -x[1])]
 
+    # ── call_sids that have transcript messages ───────────────────────────────
+    tm_r = supabase.table("conversation_messages").select("call_sid").execute()
+    transcript_sids: set[str] = {row["call_sid"] for row in (tm_r.data or []) if row.get("call_sid")}
+
     # ── Recent calls ─────────────────────────────────────────────────────────
     r = supabase.table("conversations").select(
         "call_sid,caller_phone,caller_name,started_at,updated_at,duration_seconds,call_outcome,channel,scheduled_at,transferred_at"
-    ).order("updated_at", desc=True).limit(20).execute()
+    ).order("started_at", desc=True).limit(50).execute()
     recent_calls = []
+    seen_sids: set[str] = set()
     for row in (r.data or []):
+        sid = row.get("call_sid") or ""
+        seen_sids.add(sid)
         outcome = row.get("call_outcome")
         if not outcome:
             if row.get("scheduled_at"):
@@ -218,14 +246,44 @@ def _fetch_stats_sync() -> dict:
             elif row.get("transferred_at"):
                 outcome = "transferred_to_staff"
         recent_calls.append({
-            "sid": row.get("call_sid") or "",
+            "sid": sid,
             "name": row.get("caller_name") or "Unknown",
             "phone": row.get("caller_phone") or "",
             "started_at": row.get("started_at") or row.get("updated_at") or "",
             "duration": int(row.get("duration_seconds") or 0),
             "outcome": outcome or "\u2014",
             "channel": row.get("channel") or "phone",
+            "has_transcript": sid in transcript_sids,
         })
+
+    # Append any transcript-bearing calls not already in the top-20 list
+    extra_sids = [s for s in transcript_sids if s not in seen_sids]
+    if extra_sids:
+        ex_r = supabase.table("conversations").select(
+            "call_sid,caller_phone,caller_name,started_at,updated_at,duration_seconds,call_outcome,channel,scheduled_at,transferred_at"
+        ).in_("call_sid", list(extra_sids)).execute()
+        for row in (ex_r.data or []):
+            sid = row.get("call_sid") or ""
+            outcome = row.get("call_outcome")
+            if not outcome:
+                if row.get("scheduled_at"):
+                    outcome = "booking_made"
+                elif row.get("transferred_at"):
+                    outcome = "transferred_to_staff"
+            recent_calls.append({
+                "sid": sid,
+                "name": row.get("caller_name") or "Unknown",
+                "phone": row.get("caller_phone") or "",
+                "started_at": row.get("started_at") or row.get("updated_at") or "",
+                "duration": int(row.get("duration_seconds") or 0),
+                "outcome": outcome or "\u2014",
+                "channel": row.get("channel") or "phone",
+                "has_transcript": True,
+            })
+
+    # Sort all calls newest-first by started_at, then trim to 50
+    recent_calls.sort(key=lambda c: c.get("started_at") or "", reverse=True)
+    recent_calls = recent_calls[:50]
 
     # ── Intake records ───────────────────────────────────────────────────────
     r = supabase.table("immigration_intakes").select(
@@ -254,6 +312,116 @@ def _fetch_stats_sync() -> dict:
             "started_at": row.get("created_at") or "",
         })
 
+    # ── Conversation intelligence (phase / intent / latency) ─────────────────
+    all_msgs_r = supabase.table("conversation_messages").select(
+        "call_sid,role,phase,intent,latency_ms"
+    ).execute()
+    phase_counts: dict[str, int] = {}
+    intent_counts: dict[str, int] = {}
+    latency_by_phase: dict[str, list[int]] = {}
+    turns_per_call: dict[str, int] = {}
+    for row in (all_msgs_r.data or []):
+        phase = row.get("phase") or "unknown"
+        phase_counts[phase] = phase_counts.get(phase, 0) + 1
+        intent = row.get("intent")
+        if intent and row.get("role") != "system":
+            intent_counts[intent] = intent_counts.get(intent, 0) + 1
+        if row.get("role") == "assistant" and (row.get("latency_ms") or 0) > 0:
+            latency_by_phase.setdefault(phase, []).append(row["latency_ms"])
+        sid = row.get("call_sid") or ""
+        if sid:
+            turns_per_call[sid] = turns_per_call.get(sid, 0) + 1
+    phase_dist = [{"label": k, "count": v} for k, v in sorted(phase_counts.items(), key=lambda x: -x[1])]
+    intent_dist = [{"label": k, "count": v} for k, v in sorted(intent_counts.items(), key=lambda x: -x[1])[:12]]
+    latency_dist = [{"label": k, "avg": int(sum(v) / len(v))} for k, v in sorted(latency_by_phase.items(), key=lambda x: -(sum(x[1]) / len(x[1]))) if v]
+
+    # ── Lead scoring / retention analytics ───────────────────────────────────
+    all_convs_r = supabase.table("conversations").select(
+        "call_sid,lead_score,urgency_label,call_outcome,caller_phone,scheduled_at,transferred_at"
+    ).execute()
+    lead_buckets: dict[str, int] = {"0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0}
+    turns_by_outcome: dict[str, list[int]] = {}
+    urg_outcome: dict[str, dict[str, int]] = {}
+    phone_counts_all: dict[str, int] = {}
+    conv_lead_map: dict[str, int] = {}
+    for row in (all_convs_r.data or []):
+        score = row.get("lead_score") or 0
+        if score <= 20: lead_buckets["0-20"] += 1
+        elif score <= 40: lead_buckets["21-40"] += 1
+        elif score <= 60: lead_buckets["41-60"] += 1
+        elif score <= 80: lead_buckets["61-80"] += 1
+        else: lead_buckets["81-100"] += 1
+        oc = row.get("call_outcome") or ""
+        if not oc:
+            if row.get("scheduled_at"): oc = "booking_made"
+            elif row.get("transferred_at"): oc = "transferred_to_staff"
+        sid = row.get("call_sid") or ""
+        t = turns_per_call.get(sid, 0)
+        if t > 0 and oc:
+            turns_by_outcome.setdefault(oc, []).append(t)
+        ul = row.get("urgency_label") or "unknown"
+        if oc:
+            urg_outcome.setdefault(ul, {})
+            urg_outcome[ul][oc] = urg_outcome[ul].get(oc, 0) + 1
+        phone = row.get("caller_phone")
+        if phone:
+            phone_counts_all[phone] = phone_counts_all.get(phone, 0) + 1
+        if sid and row.get("lead_score") is not None:
+            conv_lead_map[sid] = row["lead_score"]
+    lead_score_buckets = [{"label": k, "count": v} for k, v in lead_buckets.items()]
+    avg_turns_by_outcome = [
+        {"label": k, "avg": round(sum(v) / len(v), 1)}
+        for k, v in sorted(turns_by_outcome.items(), key=lambda x: -(sum(x[1]) / len(x[1]))) if v
+    ]
+    repeat_callers = sum(1 for v in phone_counts_all.values() if v > 1)
+    total_unique_callers = len(phone_counts_all)
+    urgency_vs_outcome = [
+        {"urgency": ul, "outcome": oc, "count": cnt}
+        for ul, outcomes in urg_outcome.items()
+        for oc, cnt in outcomes.items()
+    ]
+
+    # ── Demographics & risk signals ───────────────────────────────────────────
+    all_intakes_r = supabase.table("immigration_intakes").select(
+        "call_sid,country_of_birth,case_type,has_attorney,prior_deportation,criminal_history,preferred_language"
+    ).execute()
+    country_counts: dict[str, int] = {}
+    attorney_by_case: dict[str, dict[str, int]] = {}
+    lang_pref_counts: dict[str, int] = {}
+    lead_by_case: dict[str, list[int]] = {}
+    risk_total = 0; risk_deported = 0; risk_criminal = 0
+    for row in (all_intakes_r.data or []):
+        country = row.get("country_of_birth") or "Unknown"
+        country_counts[country] = country_counts.get(country, 0) + 1
+        ct = row.get("case_type") or "other"
+        has_atty = bool(row.get("has_attorney"))
+        attorney_by_case.setdefault(ct, {"yes": 0, "no": 0})
+        attorney_by_case[ct]["yes" if has_atty else "no"] += 1
+        lang = row.get("preferred_language") or "en"
+        lang_pref_counts[lang] = lang_pref_counts.get(lang, 0) + 1
+        risk_total += 1
+        if row.get("prior_deportation"): risk_deported += 1
+        if row.get("criminal_history"): risk_criminal += 1
+        sid = row.get("call_sid") or ""
+        if sid and sid in conv_lead_map:
+            lead_by_case.setdefault(ct, []).append(conv_lead_map[sid])
+    country_dist = [{"label": k, "count": v} for k, v in sorted(country_counts.items(), key=lambda x: -x[1])[:12]]
+    attorney_rate = [
+        {"label": k, "with_atty": v["yes"], "without_atty": v["no"]}
+        for k, v in sorted(attorney_by_case.items(), key=lambda x: -(x[1]["yes"] + x[1]["no"]))
+    ]
+    avg_lead_by_case = [
+        {"label": k, "avg": round(sum(v) / len(v))}
+        for k, v in sorted(lead_by_case.items(), key=lambda x: -(sum(x[1]) / len(x[1]))) if v
+    ]
+    risk_flags = {
+        "total": risk_total,
+        "prior_deportation": risk_deported,
+        "criminal_history": risk_criminal,
+        "deportation_pct": round(risk_deported / risk_total * 100) if risk_total else 0,
+        "criminal_pct": round(risk_criminal / risk_total * 100) if risk_total else 0,
+    }
+
     return {
         "summary": {
             "total_calls_30d": total_calls,
@@ -273,6 +441,19 @@ def _fetch_stats_sync() -> dict:
         "channels": channels,
         "recent_calls": recent_calls,
         "intake_records": intake_records,
+        # ── new analytics ──────────────────────────────────────────────────
+        "phase_distribution": phase_dist,
+        "intent_distribution": intent_dist,
+        "latency_by_phase": latency_dist,
+        "avg_turns_by_outcome": avg_turns_by_outcome,
+        "lead_score_buckets": lead_score_buckets,
+        "avg_lead_by_case": avg_lead_by_case,
+        "urgency_vs_outcome": urgency_vs_outcome,
+        "country_distribution": country_dist,
+        "attorney_rate": attorney_rate,
+        "risk_flags": risk_flags,
+        "repeat_callers": repeat_callers,
+        "total_unique_callers": total_unique_callers,
     }
 
 
@@ -579,6 +760,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
           Intake Records
         </div>
+        <div class="nav-item" onclick="document.getElementById('convIntelSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Conv. Intelligence
+        </div>
+        <div class="nav-item" onclick="document.getElementById('leadSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          Lead Scoring
+        </div>
+        <div class="nav-item" onclick="document.getElementById('demographicsSection').scrollIntoView({behavior:'smooth'})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+          Demographics
+        </div>
       </div>
     </nav>
     <div class="sidebar-footer">
@@ -699,6 +892,87 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           </table>
         </div>
       </div>
+
+      <!-- ── Conversation Intelligence ─────────────────────────────────── -->
+      <div id="convIntelSection">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin:28px 0 16px;display:flex;align-items:center;gap:8px">
+          <div style="width:4px;height:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:2px"></div>
+          Conversation Intelligence
+          <span style="font-size:11px;font-weight:500;color:#94a3b8;background:#f1f5f9;padding:3px 8px;border-radius:20px;margin-left:4px">Training Data</span>
+        </div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Phase Distribution</div><div class="chart-sub">Turn count per conversation phase</div></div></div>
+            <canvas id="phaseDist"></canvas>
+            <div class="empty-state" id="phaseEmpty" style="display:none">No data</div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Top Caller Intents</div><div class="chart-sub">Most frequent classified intents</div></div></div>
+            <canvas id="intentDist"></canvas>
+            <div class="empty-state" id="intentEmpty" style="display:none">No data</div>
+          </div>
+        </div>
+        <div class="chart-grid-2" style="margin-bottom:0">
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">AI Response Latency by Phase</div><div class="chart-sub">Average milliseconds per conversation phase</div></div></div>
+            <canvas id="latencyPhase"></canvas>
+            <div class="empty-state" id="latencyEmpty" style="display:none">No data</div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Avg Turns to Resolution</div><div class="chart-sub">Message exchanges grouped by call outcome</div></div></div>
+            <canvas id="turnsOutcome"></canvas>
+            <div class="empty-state" id="turnsEmpty" style="display:none">No data</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Lead Scoring Analytics ──────────────────────────────────────── -->
+      <div id="leadSection">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin:28px 0 16px;display:flex;align-items:center;gap:8px">
+          <div style="width:4px;height:20px;background:linear-gradient(135deg,#10b981,#0891b2);border-radius:2px"></div>
+          Lead Scoring Analytics
+          <span style="font-size:11px;font-weight:500;color:#94a3b8;background:#f1f5f9;padding:3px 8px;border-radius:20px;margin-left:4px">Model Validation</span>
+        </div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Lead Score Distribution</div><div class="chart-sub">How scores spread across all callers (0\u2013100)</div></div></div>
+            <canvas id="leadScoreDist"></canvas>
+            <div class="empty-state" id="leadEmpty" style="display:none">No data</div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Avg Lead Score by Case Type</div><div class="chart-sub">Mean score per immigration category</div></div></div>
+            <canvas id="leadByCase"></canvas>
+            <div class="empty-state" id="leadCaseEmpty" style="display:none">No data</div>
+          </div>
+        </div>
+        <div class="chart-card" style="margin-bottom:0">
+          <div class="chart-header"><div><div class="chart-title">Urgency Level vs Call Outcome</div><div class="chart-sub">How triage classification correlates with resolution</div></div></div>
+          <canvas id="urgencyOutcome" height="55"></canvas>
+          <div class="empty-state" id="urgencyOutcomeEmpty" style="display:none">No data</div>
+        </div>
+      </div>
+
+      <!-- ── Demographics & Risk Signals ────────────────────────────────── -->
+      <div id="demographicsSection" style="padding-bottom:32px">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin:28px 0 16px;display:flex;align-items:center;gap:8px">
+          <div style="width:4px;height:20px;background:linear-gradient(135deg,#f59e0b,#ec4899);border-radius:2px"></div>
+          Caller Demographics &amp; Risk Signals
+          <span style="font-size:11px;font-weight:500;color:#94a3b8;background:#f1f5f9;padding:3px 8px;border-radius:20px;margin-left:4px">Training Context</span>
+        </div>
+        <div id="riskKpiGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px"></div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Country of Origin</div><div class="chart-sub">Top 12 caller birth countries</div></div></div>
+            <canvas id="countryDist"></canvas>
+            <div class="empty-state" id="countryEmpty" style="display:none">No data</div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-header"><div><div class="chart-title">Prior Attorney Representation</div><div class="chart-sub">Callers who already had counsel, by case type</div></div></div>
+            <canvas id="attorneyRate"></canvas>
+            <div class="empty-state" id="attorneyEmpty" style="display:none">No data</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -772,10 +1046,13 @@ function hbar(id,eid,data,cmap){
 }
 function renderTable(data){
   const tb=document.getElementById('callsTableBody');
-  if(!data.length){tb.innerHTML='<tr><td colspan="6" class="empty-state" style="padding:40px">No calls recorded yet</td></tr>';return;}
+  if(!data.length){tb.innerHTML='<tr><td colspan="7" class="empty-state" style="padding:40px">No calls recorded yet</td></tr>';return;}
   tb.innerHTML=data.map(r=>{
     const bs=OUTCOME_B[r.outcome]||'background:#f8fafc;color:#475569;border:1px solid #e2e8f0';
-    return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td><span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">${fmt(r.channel)}</span></td><td><span class="badge" style="${bs}">${fmt(r.outcome)}</span></td><td>${fmtD(r.duration)}</td><td>${fmtT(r.started_at)}</td></tr>`;
+    const txBtn=r.has_transcript
+      ?`<button onclick="viewTranscript('${r.sid}','${(r.name||'').replace(/'/g,"\\'")}','${r.phone||''}')" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;white-space:nowrap">View</button>`
+      :`<span style="color:#94a3b8;font-size:12px">\u2014</span>`;
+    return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td><span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">${fmt(r.channel)}</span></td><td><span class="badge" style="${bs}">${fmt(r.outcome)}</span></td><td>${fmtD(r.duration)}</td><td>${fmtT(r.started_at)}</td><td>${txBtn}</td></tr>`;
   }).join('');
 }
 const URGENCY_B={critical:'background:#fef2f2;color:#dc2626;border:1px solid #fecaca',high:'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa',medium:'background:#fffbeb;color:#b45309;border:1px solid #fde68a',routine:'background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0'};
@@ -795,6 +1072,82 @@ function renderIntakeTable(data){
   }).join('');
 }
 
+// ── Helpers for new analytics charts ─────────────────────────────────────────
+function hbarAvg(id,eid,data,labelKey,valKey,unit,color){
+  if(!data||!data.length){document.getElementById(id).style.display='none';if(eid)document.getElementById(eid).style.display='block';return;}
+  _ch[id]=new Chart(document.getElementById(id),{type:'bar',
+    data:{labels:data.map(d=>fmt(d[labelKey])),datasets:[{data:data.map(d=>d[valKey]),
+      backgroundColor:color+'22',borderColor:color,borderWidth:1.5,borderRadius:5,borderSkipped:false}]},
+    options:{indexAxis:'y',responsive:true,plugins:{legend:{display:false},
+      tooltip:{callbacks:{label:ctx=>`${ctx.parsed.x}${unit}`},backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{x:{beginAtZero:true,ticks:{color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},
+              y:{ticks:{color:'#374151',font:{size:11}},grid:{display:false}}}}});
+}
+function vbar(id,eid,data,labelKey,valKey,colors){
+  if(!data||!data.length){document.getElementById(id).style.display='none';if(eid)document.getElementById(eid).style.display='block';return;}
+  const cs=Array.isArray(colors)?colors:data.map((_,i)=>FB[i%FB.length]);
+  _ch[id]=new Chart(document.getElementById(id),{type:'bar',
+    data:{labels:data.map(d=>d[labelKey]),datasets:[{data:data.map(d=>d[valKey]),
+      backgroundColor:cs.map(c=>c+'44'),borderColor:cs,borderWidth:1.5,borderRadius:6,borderSkipped:false}]},
+    options:{responsive:true,plugins:{legend:{display:false},
+      tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{y:{beginAtZero:true,ticks:{stepSize:1,color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},
+              x:{ticks:{color:'#374151',font:{size:11}},grid:{display:false}}}}});
+}
+function stackedBar(id,eid,data){
+  if(!data||!data.length){document.getElementById(id).style.display='none';if(eid)document.getElementById(eid).style.display='block';return;}
+  const urgencies=['critical','high','medium','routine','unknown'].filter(u=>data.some(d=>d.urgency===u));
+  const outcomes=[...new Set(data.map(d=>d.outcome))];
+  const datasets=outcomes.map(oc=>({
+    label:fmt(oc),
+    data:urgencies.map(u=>{const m=data.find(d=>d.urgency===u&&d.outcome===oc);return m?m.count:0;}),
+    backgroundColor:(OUTCOME_C[oc]||FB[0])+'bb',borderColor:OUTCOME_C[oc]||FB[0],borderWidth:1,borderRadius:3,
+  }));
+  _ch[id]=new Chart(document.getElementById(id),{type:'bar',
+    data:{labels:urgencies.map(fmt),datasets},
+    options:{responsive:true,plugins:{legend:{position:'bottom',labels:{boxWidth:10,padding:12,font:{size:11}}},
+      tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{x:{stacked:true,ticks:{color:'#374151',font:{size:11}},grid:{display:false}},
+              y:{stacked:true,beginAtZero:true,ticks:{stepSize:1,color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}}}}});
+}
+function stackedBarAtty(id,eid,data){
+  if(!data||!data.length){document.getElementById(id).style.display='none';if(eid)document.getElementById(eid).style.display='block';return;}
+  _ch[id]=new Chart(document.getElementById(id),{type:'bar',
+    data:{labels:data.map(d=>fmt(d.label)),datasets:[
+      {label:'With Attorney',data:data.map(d=>d.with_atty),backgroundColor:'#6366f1bb',borderColor:'#6366f1',borderWidth:1,borderRadius:3},
+      {label:'Without',data:data.map(d=>d.without_atty),backgroundColor:'#e2e8f0',borderColor:'#94a3b8',borderWidth:1,borderRadius:3},
+    ]},
+    options:{indexAxis:'y',responsive:true,plugins:{legend:{position:'bottom',labels:{boxWidth:10,padding:12,font:{size:11}}},
+      tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
+      scales:{x:{stacked:true,beginAtZero:true,ticks:{color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},
+              y:{stacked:true,ticks:{color:'#374151',font:{size:11}},grid:{display:false}}}}});
+}
+function renderConvIntel(d){
+  hbar('phaseDist','phaseEmpty',d.phase_distribution,CASE_C);
+  hbar('intentDist','intentEmpty',d.intent_distribution,{});
+  hbarAvg('latencyPhase','latencyEmpty',d.latency_by_phase,'label','avg',' ms','#8b5cf6');
+  hbarAvg('turnsOutcome','turnsEmpty',d.avg_turns_by_outcome,'label','avg',' turns','#0891b2');
+}
+function renderLeadScoring(d){
+  const bucketColors=['#ef4444','#f59e0b','#6366f1','#10b981','#16a34a'];
+  vbar('leadScoreDist','leadEmpty',d.lead_score_buckets,'label','count',bucketColors);
+  hbarAvg('leadByCase','leadCaseEmpty',d.avg_lead_by_case,'label','avg','','#10b981');
+  stackedBar('urgencyOutcome','urgencyOutcomeEmpty',d.urgency_vs_outcome);
+}
+function renderRiskKpis(rf,repeatCallers,totalCallers){
+  document.getElementById('riskKpiGrid').innerHTML=[
+    {icon:'<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',bg:'#eff6ff',ic:'#2563eb',val:totalCallers.toLocaleString(),lbl:'Unique Callers',sub:'All time'},
+    {icon:'<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>',bg:'#f0fdf4',ic:'#16a34a',val:repeatCallers.toLocaleString(),lbl:'Repeat Callers',sub:'Called more than once'},
+    {icon:'<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>',bg:'#fff7ed',ic:'#c2410c',val:(rf.deportation_pct||0)+'%',lbl:'Prior Deportation',sub:`${rf.prior_deportation||0} of ${rf.total||0} intakes`},
+    {icon:'<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>',bg:'#fef2f2',ic:'#dc2626',val:(rf.criminal_pct||0)+'%',lbl:'Criminal History',sub:`${rf.criminal_history||0} of ${rf.total||0} intakes`},
+  ].map(c=>`<div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:${c.bg};color:${c.ic}">${c.icon}</div></div><div class="kpi-value" style="font-size:22px">${c.val}</div><div class="kpi-label">${c.lbl} <span style="color:#cbd5e1;margin:0 4px">&middot;</span><span style="font-weight:400">${c.sub}</span></div></div>`).join('');
+}
+function renderDemographics(d){
+  renderRiskKpis(d.risk_flags||{},d.repeat_callers||0,d.total_unique_callers||0);
+  hbar('countryDist','countryEmpty',d.country_distribution,{});
+  stackedBarAtty('attorneyRate','attorneyEmpty',d.attorney_rate);
+}
+
 async function loadData(){
   try{
     const res=await fetch('/dashboard/api/stats',{credentials:'same-origin'});
@@ -811,6 +1164,9 @@ async function loadData(){
     donut('channelsChart','channelsEmpty',d.channels,CHANNEL_C);
     renderTable(d.recent_calls);
     renderIntakeTable(d.intake_records);
+    renderConvIntel(d);
+    renderLeadScoring(d);
+    renderDemographics(d);
     const now=new Date(),past=new Date(now);past.setDate(past.getDate()-30);
     document.getElementById('dateRange').textContent=past.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' \u2013 '+now.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
     document.getElementById('lastUpdated').textContent='Updated '+now.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
@@ -825,6 +1181,67 @@ async function loadData(){
 
 loadData();
 setInterval(loadData,5*60*1000);
+
+// ── Transcript modal ──────────────────────────────────────────────────────
+async function viewTranscript(callSid, name, phone){
+  const modal=document.getElementById('transcriptModal');
+  const title=document.getElementById('transcriptTitle');
+  const sub=document.getElementById('transcriptSub');
+  const body=document.getElementById('transcriptBody');
+  title.textContent=name||'Unknown Caller';
+  sub.textContent=(phone||callSid||'')+'  \u00b7  '+callSid;
+  body.innerHTML='<div style="text-align:center;padding:40px;color:#64748b">Loading\u2026</div>';
+  modal.style.display='flex';
+  try{
+    const res=await fetch('/dashboard/api/transcript/'+encodeURIComponent(callSid),{credentials:'same-origin'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const msgs=data.messages||[];
+    if(!msgs.length){body.innerHTML='<div style="text-align:center;padding:40px;color:#64748b">No transcript available for this call.</div>';return;}
+    const seen=new Set();
+    body.innerHTML=msgs.map(m=>{
+      const key=m.turn_index+'|'+m.role;
+      if(seen.has(key))return'';
+      seen.add(key);
+      const isUser=m.role==='caller'||m.role==='user';
+      const roleLabel=isUser?'Caller':'AI Assistant';
+      const roleBg=isUser?'#f0fdf4':'#eef2ff';
+      const roleColor=isUser?'#16a34a':'#4338ca';
+      const ms=m.latency_ms?`<span style="font-size:10px;color:#94a3b8;margin-left:6px">${m.latency_ms}ms</span>`:'';
+      const phase=m.phase&&m.phase!=='greeting'?`<span style="font-size:10px;color:#94a3b8;margin-left:6px;text-transform:capitalize">${m.phase}</span>`:'';
+      const content=(m.content||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return`<div style="display:flex;flex-direction:column;align-items:${isUser?'flex-start':'flex-end'};margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="font-size:11px;font-weight:600;color:${roleColor};background:${roleBg};padding:2px 7px;border-radius:4px">${roleLabel}</span>${phase}${ms}
+        </div>
+        <div style="max-width:85%;background:${isUser?'#f8fafc':'#eef2ff'};border:1px solid ${isUser?'#e2e8f0':'#c7d2fe'};border-radius:${isUser?'4px 12px 12px 12px':'12px 4px 12px 12px'};padding:10px 14px;font-size:13px;line-height:1.5;color:#1e293b;white-space:pre-wrap">${content}</div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    body.innerHTML='<div style="text-align:center;padding:40px;color:#ef4444">Failed to load transcript: '+e.message+'</div>';
+  }
+}
+function closeTranscript(){
+  document.getElementById('transcriptModal').style.display='none';
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeTranscript();});
 </script>
+
+<!-- Transcript modal -->
+<div id="transcriptModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px">
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:16px;width:100%;max-width:680px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 25px 50px rgba(0,0,0,0.5)">
+    <!-- Header -->
+    <div style="padding:20px 24px 16px;border-bottom:1px solid #334155;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-shrink:0">
+      <div>
+        <div id="transcriptTitle" style="font-size:16px;font-weight:700;color:#f1f5f9"></div>
+        <div id="transcriptSub" style="font-size:12px;color:#64748b;margin-top:3px;font-family:monospace"></div>
+      </div>
+      <button onclick="closeTranscript()" style="background:none;border:none;color:#94a3b8;cursor:pointer;padding:4px;border-radius:6px;line-height:1;font-size:18px;flex-shrink:0">\u2715</button>
+    </div>
+    <!-- Body -->
+    <div id="transcriptBody" style="padding:24px;overflow-y:auto;flex:1"></div>
+  </div>
+</div>
+
 </body>
 </html>"""

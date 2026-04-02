@@ -32,6 +32,49 @@ _GHL_BASE = "https://services.leadconnectorhq.com"
 # response (which only provides start times).  Override via GHL calendar settings.
 _DEFAULT_SLOT_DURATION_MINUTES = 60
 
+# ─── Credential circuit breaker ──────────────────────────────────────────────
+# After a 401/403 response the circuit opens and all subsequent GHL calls are
+# short-circuited immediately (returning None / False / []).  The circuit
+# re-closes automatically after _CRED_RETRY_AFTER seconds so the system
+# self-heals if credentials are rotated without a restart.
+_CRED_RETRY_AFTER = 300  # seconds (5 min)
+
+_creds_ok: bool = True                  # False once a 401/403 is seen
+_creds_failed_at: float | None = None   # monotonic timestamp of first failure
+
+
+def _mark_creds_failed() -> None:
+    """Open the circuit breaker after an auth error."""
+    global _creds_ok, _creds_failed_at
+    if _creds_ok:
+        _creds_failed_at = time.monotonic()
+        _creds_ok = False
+        logger.error(
+            "GHL credentials rejected (401/403). All GHL calls will be "
+            "short-circuited for %d s. Check GHL_API_KEY / GHL_LOCATION_ID.",
+            _CRED_RETRY_AFTER,
+        )
+
+
+def _creds_available() -> bool:
+    """Return True when GHL calls should proceed."""
+    global _creds_ok, _creds_failed_at
+    if _creds_ok:
+        return True
+    # Auto-reset after the retry window so the system self-heals
+    if _creds_failed_at is not None and (time.monotonic() - _creds_failed_at) >= _CRED_RETRY_AFTER:
+        _creds_ok = True
+        _creds_failed_at = None
+        logger.info("GHL credential circuit breaker reset — retrying.")
+        return True
+    return False
+
+
+def ghl_is_available() -> bool:
+    """Public accessor used by health-check and calendar service."""
+    return _creds_available()
+
+
 # ─── Rate limiter: 100 req/min ────────────────────────────────────────────────
 _RATE_LIMIT = 100          # requests per window
 _RATE_WINDOW = 60.0        # seconds
@@ -87,23 +130,47 @@ class GHLClient:
         }
 
     async def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:
+        if not _creds_available():
+            raise httpx.HTTPStatusError(
+                "GHL credentials unavailable (circuit open)",
+                request=None,  # type: ignore[arg-type]
+                response=None,  # type: ignore[arg-type]
+            )
         await _rate_bucket.acquire()
         url = f"{_GHL_BASE}{path}"
         resp = await self._http.get(url, headers=self._headers(), params=params or {})
+        if resp.status_code in (401, 403):
+            _mark_creds_failed()
         resp.raise_for_status()
         return resp.json()
 
     async def _post(self, path: str, payload: dict) -> dict[str, Any]:
+        if not _creds_available():
+            raise httpx.HTTPStatusError(
+                "GHL credentials unavailable (circuit open)",
+                request=None,  # type: ignore[arg-type]
+                response=None,  # type: ignore[arg-type]
+            )
         await _rate_bucket.acquire()
         url = f"{_GHL_BASE}{path}"
         resp = await self._http.post(url, headers=self._headers(), json=payload)
+        if resp.status_code in (401, 403):
+            _mark_creds_failed()
         resp.raise_for_status()
         return resp.json()
 
     async def _put(self, path: str, payload: dict) -> dict[str, Any]:
+        if not _creds_available():
+            raise httpx.HTTPStatusError(
+                "GHL credentials unavailable (circuit open)",
+                request=None,  # type: ignore[arg-type]
+                response=None,  # type: ignore[arg-type]
+            )
         await _rate_bucket.acquire()
         url = f"{_GHL_BASE}{path}"
         resp = await self._http.put(url, headers=self._headers(), json=payload)
+        if resp.status_code in (401, 403):
+            _mark_creds_failed()
         resp.raise_for_status()
         return resp.json()
 

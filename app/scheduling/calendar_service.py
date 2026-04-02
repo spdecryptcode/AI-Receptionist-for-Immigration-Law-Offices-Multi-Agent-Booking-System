@@ -24,7 +24,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.crm.ghl_client import get_ghl_client
+from app.crm.ghl_client import get_ghl_client, ghl_is_available
 from app.scheduling.google_calendar import create_calendar_event
 from app.scheduling.slot_cache import (
     cache_slots,
@@ -54,6 +54,10 @@ async def get_available_slots(
     ghl = get_ghl_client()
     calendar_id = settings.ghl_calendar_id
     tz = settings.tz
+
+    if not ghl_is_available():
+        logger.warning("GHL unavailable — returning empty slot list.")
+        return []
 
     business_days = get_next_business_days(n=days_ahead, tz=tz)
     all_slots: list[dict] = []
@@ -158,6 +162,13 @@ async def book_appointment(
 
     if not start_iso or not end_iso:
         logger.error("book_appointment: slot missing startTime/endTime")
+        return None
+
+    if not ghl_is_available():
+        logger.warning(
+            f"GHL unavailable — appointment for contact {contact_id} at {start_iso} "
+            "could not be booked. Intake data is saved to Supabase."
+        )
         return None
 
     # Build appointment title

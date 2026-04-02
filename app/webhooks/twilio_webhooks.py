@@ -153,6 +153,7 @@ async def call_status_callback(request: Request):
                     "lead_score": -1,
                     "urgency_score": 0,
                     "urgency_label": "low",
+                    "call_outcome": "dropped",
                     "intake": {"caller_phone": from_number},
                     "scheduled_at": None,
                     "appointment_id": None,
