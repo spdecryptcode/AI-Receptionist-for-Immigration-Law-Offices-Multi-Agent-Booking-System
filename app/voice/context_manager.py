@@ -133,14 +133,20 @@ class ContextManager:
         self,
         system_prompt: str,
         extra_context: str = "",
+        rag_context: str = "",
     ) -> list[dict[str, str]]:
         """
         Build the `messages` list to send to OpenAI.
 
         Structure:
           [0] system: main immigration system prompt (static → prompt caching)
-          [1] system: context injection (summary + intake so far + extra hints)
+          [1] system: context injection (summary + intake so far + extra hints + RAG)
           [2..N] user/assistant turns (verbatim recent history)
+
+        Args:
+            rag_context: Pre-retrieved RAG knowledge base context.  Pass this from
+                         an async caller that already ran RAGRetriever.retrieve()
+                         before building messages.  Empty string = no RAG injection.
         """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
@@ -162,6 +168,8 @@ class ContextManager:
             )
         if extra_context:
             context_parts.append(extra_context)
+        if rag_context:
+            context_parts.append(rag_context)
 
         if context_parts:
             messages.append({

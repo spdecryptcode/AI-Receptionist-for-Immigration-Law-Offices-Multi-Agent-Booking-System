@@ -11,6 +11,10 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -40,7 +44,7 @@ if db_url:
         async_url = "postgresql+asyncpg://" + async_url[len("postgresql+psycopg2://"):]
     elif async_url.startswith("postgres+psycopg2://"):
         async_url = "postgresql+asyncpg://" + async_url[len("postgres+psycopg2://"):]
-    config.set_main_option("sqlalchemy.url", async_url)
+    config.set_main_option("sqlalchemy.url", async_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging
 if config.config_file_name is not None:

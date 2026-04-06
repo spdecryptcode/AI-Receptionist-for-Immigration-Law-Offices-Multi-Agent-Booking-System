@@ -18,6 +18,7 @@ Prompt caching note:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -158,6 +159,36 @@ class ImmigrationAgent:
         Also fires side-effects: phase transitions, signal extraction.
         """
         self._history.append({"role": "user", "content": caller_transcript})
+
+        # RAG injection — retrieve relevant knowledge for phases that benefit from it
+        if self.phase not in (ConversationPhase.GREETING, ConversationPhase.IDENTIFICATION):
+            try:
+                from app.dependencies import get_rag_retriever
+                from app.rag.context_builder import build_rag_context
+                _retriever = get_rag_retriever()
+                if _retriever:
+                    _chunks = await asyncio.wait_for(
+                        _retriever.retrieve(
+                            query=caller_transcript,
+                            language=self.language,
+                            phase=self.phase.value,
+                            channel="voice",
+                            call_sid=self.call_sid,
+                        ),
+                        timeout=0.35,
+                    )
+                    if _chunks:
+                        _rag_ctx = build_rag_context(_chunks, channel="voice")
+                        if _rag_ctx:
+                            self.runtime_context = (
+                                self.runtime_context + "\n\n" + _rag_ctx
+                                if self.runtime_context
+                                else _rag_ctx
+                            )
+            except asyncio.TimeoutError:
+                logger.debug(f"[{self.call_sid}] RAG retrieval timeout — proceeding without")
+            except Exception as _rag_exc:
+                logger.debug(f"[{self.call_sid}] RAG skipped: {_rag_exc}")
 
         messages = self._build_messages()
         max_tokens = _MAX_TOKENS.get(self.phase, 150)
@@ -388,8 +419,24 @@ Return only the JSON object, no explanation.
         }
         for marker, phase in phase_map.items():
             if marker in text_upper:
+                old_phase = self.phase
                 self.phase = phase
                 logger.debug(f"[{self.call_sid}] Phase → {phase.value}")
+                # Speculative RAG prefetch for the new phase
+                if phase != old_phase:
+                    try:
+                        from app.dependencies import get_rag_retriever
+                        _retr = get_rag_retriever()
+                        if _retr:
+                            asyncio.create_task(
+                                _retr.prefetch(
+                                    phase=phase.value,
+                                    language=self.language,
+                                    case_type=self.intake_data.get("case_type"),
+                                )
+                            )
+                    except Exception:
+                        pass
                 break
 
     def check_signals(self, response_text: str) -> dict:

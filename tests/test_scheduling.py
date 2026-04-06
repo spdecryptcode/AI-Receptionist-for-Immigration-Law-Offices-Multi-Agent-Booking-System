@@ -394,7 +394,7 @@ class TestGetNextBusinessDays:
         today_str = datetime.now(tz).date().isoformat()
         result = get_next_business_days(5, tz=tz)
         for day_str in result:
-            assert day_str > today_str
+            assert day_str >= today_str  # same-day slots are offered
 
     def test_accepts_custom_tz(self):
         tz = ZoneInfo("America/New_York")
@@ -503,8 +503,8 @@ class TestFormatSlotsForSpeech:
     def test_slot_without_display_field_skipped(self):
         slots = [{"startTime": "2025-01-06T09:00:00Z"}]  # no display key
         result = format_slots_for_speech(slots, language="en")
-        # All displays empty → returns ""
-        assert result == ""
+        # No display key → falls back to formatting from startTime
+        assert result != ""
 
     def test_default_language_is_en(self):
         result = format_slots_for_speech([_display_slot("Mon Jan 6, 9:00 AM")])
@@ -667,10 +667,10 @@ class TestBookAppointment:
         with patch("app.scheduling.calendar_service.get_ghl_client", return_value=mock_ghl), \
              patch("app.scheduling.calendar_service.create_calendar_event",
                    new_callable=AsyncMock, return_value="evt-1"), \
-             patch("app.scheduling.calendar_service.remove_slot", new_callable=AsyncMock) as mock_remove:
+             patch("app.scheduling.calendar_service.invalidate_date", new_callable=AsyncMock) as mock_invalidate:
             await book_appointment("contact-1", slot, redis=redis)
 
-        mock_remove.assert_awaited_once()
+        mock_invalidate.assert_awaited_once()
 
     async def test_remove_slot_not_called_without_redis(self):
         mock_ghl = self._mock_ghl()

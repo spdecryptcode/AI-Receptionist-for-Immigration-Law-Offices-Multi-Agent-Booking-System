@@ -158,6 +158,147 @@ async def run_post_call_pipeline(
 
     logger.info(f"[{call_sid}] Post-call pipeline complete")
 
+    # Step 6: Auto-ingest completed call into the RAG knowledge base.
+    # a) Transcript — index for all calls that had actual conversation turns.
+    # b) Caller profile — always upsert so staff chat can find any caller by name.
+    if conversation:
+        try:
+            from app.rag.ingestion import DocumentIngester
+            _ingester = DocumentIngester()
+            asyncio.create_task(
+                _ingester.ingest_conversation_transcript(call_sid)
+            )
+            asyncio.create_task(
+                _ingest_caller_profile(call_sid, structured, summary, phone, language, _ingester)
+            )
+        except Exception as _exc:
+            logger.debug(f"[{call_sid}] RAG ingestion skipped: {_exc}")
+
+
+# ─── RAG caller-profile ingestion ────────────────────────────────────────────
+
+async def _ingest_caller_profile(
+    call_sid: str,
+    structured: dict,
+    summary: Optional[str],
+    phone: str,
+    language: str,
+    ingester,
+) -> None:
+    """
+    Build and upsert a caller-profile RAG document immediately after a call ends.
+    Uses the structured-data extraction result so no extra DB round-trip is needed
+    for the intake fields we already have in memory.
+    """
+    try:
+        from app.dependencies import get_asyncpg_pool
+        pool = await get_asyncpg_pool()
+        async with pool.acquire() as conn:
+            cv = await conn.fetchrow(
+                """
+                SELECT caller_name, caller_phone, language_detected,
+                       urgency_label, urgency_score, lead_score,
+                       call_outcome, duration_seconds, started_at, scheduled_at
+                FROM conversations WHERE call_sid = $1
+                """,
+                call_sid,
+            )
+            cl = await conn.fetchrow(
+                "SELECT ai_summary, sentiment_label FROM call_logs "
+                "WHERE call_sid = $1 AND event_type = 'call_ended'",
+                call_sid,
+            )
+            ii = await conn.fetchrow(
+                """
+                SELECT case_type, current_immigration_status, country_of_birth,
+                       nationality, prior_deportation, criminal_history,
+                       has_attorney, urgency_reason, family_in_us, employer_sponsor
+                FROM immigration_intakes WHERE call_sid = $1
+                """,
+                call_sid,
+            )
+            ls = await conn.fetchrow(
+                """
+                SELECT total_score, recommended_attorney_tier,
+                       recommended_follow_up, top_signals, notes
+                FROM lead_scores WHERE call_sid = $1
+                """,
+                call_sid,
+            )
+
+        if not cv:
+            return
+
+        name = cv["caller_name"] or "Unknown"
+        lines = [
+            f"Caller: {name}",
+            f"Phone: {cv['caller_phone'] or phone or 'unknown'}",
+            f"Language: {cv['language_detected'] or language}",
+            f"Total calls: 1",
+        ]
+
+        score = (cv["lead_score"] or (ls["total_score"] if ls else None))
+        if score:
+            lines.append(f"\nLead Score: {score}")
+        if ls and ls["recommended_attorney_tier"]:
+            lines.append(f"Attorney Tier: {ls['recommended_attorney_tier']}")
+        if ls and ls["recommended_follow_up"]:
+            lines.append(f"Recommended Follow-up: {ls['recommended_follow_up']}")
+
+        if ii and ii["case_type"]:
+            lines.append(f"\nCase Type: {ii['case_type']}")
+            if ii["current_immigration_status"]:
+                lines.append(f"Immigration Status: {ii['current_immigration_status']}")
+            if ii["country_of_birth"]:
+                lines.append(f"Country of Birth: {ii['country_of_birth']}")
+            flags = [
+                k for k, v in {
+                    "prior deportation": ii["prior_deportation"],
+                    "criminal history": ii["criminal_history"],
+                    "has attorney": ii["has_attorney"],
+                    "family in US": ii["family_in_us"],
+                    "employer sponsor": ii["employer_sponsor"],
+                }.items() if v
+            ]
+            if flags:
+                lines.append(f"Flags: {', '.join(flags)}")
+            if ii["urgency_reason"]:
+                lines.append(f"Urgency Reason: {ii['urgency_reason']}")
+
+        if ls and ls["top_signals"]:
+            lines.append(f"\nTop Signals: {ls['top_signals']}")
+
+        date_str = cv["started_at"].strftime("%Y-%m-%d %H:%M") if cv["started_at"] else "unknown date"
+        outcome = cv["call_outcome"] or "unknown"
+        urgency = cv["urgency_label"] or "unknown"
+        dur = f"{cv['duration_seconds']}s" if cv["duration_seconds"] else "?"
+        lines.append("\nCall History:")
+        lines.append(f"  - {date_str} | {outcome} | urgency={urgency} | {dur}")
+        ai_sum = (cl["ai_summary"] if cl else None) or summary
+        if ai_sum:
+            lines.append(f"    Summary: {ai_sum}")
+        if cl and cl["sentiment_label"]:
+            lines.append(f"    Sentiment: {cl['sentiment_label']}")
+        if cv["scheduled_at"]:
+            lines.append(f"    Appointment: {cv['scheduled_at'].strftime('%Y-%m-%d %H:%M')}")
+
+        await ingester.ingest_document(
+            title=f"Caller profile: {name} (1 call)",
+            source_type="caller_profile",
+            language=cv["language_detected"] or language,
+            content="\n".join(lines),
+            metadata={
+                "caller_name": name,
+                "caller_phone": cv["caller_phone"] or phone,
+                "call_count": 1,
+                "latest_call_sid": call_sid,
+                "backfill": False,
+            },
+        )
+        logger.info(f"[{call_sid}] RAG caller profile upserted for {name}")
+    except Exception as exc:
+        logger.warning(f"[{call_sid}] RAG caller profile ingestion failed: {exc}")
+
 
 # ─── Step 2: AI summary ───────────────────────────────────────────────────────
 

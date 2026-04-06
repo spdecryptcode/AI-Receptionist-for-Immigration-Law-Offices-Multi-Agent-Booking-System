@@ -154,6 +154,7 @@ class TestCheckSignals:
         assert set(sigs.keys()) == {
             "emergency_transfer", "schedule_now",
             "language_switch_es", "language_switch_en", "end_call",
+            "confirm_slot",
         }
 
 

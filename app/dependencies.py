@@ -4,12 +4,17 @@ injected via FastAPI dependency injection where needed.
 """
 from __future__ import annotations
 
+import logging
+
+import asyncpg
 import httpx
 import openai
 import redis.asyncio as aioredis
 from supabase import create_client, Client as SupabaseClient
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # HTTP/2 AsyncClient — shared across all OpenAI requests
@@ -83,6 +88,60 @@ def get_supabase_client() -> SupabaseClient:
 
 
 # ---------------------------------------------------------------------------
+# asyncpg connection pool — required for RAG vector queries (pgvector)
+# Falls back gracefully if database_url is not configured.
+# ---------------------------------------------------------------------------
+_asyncpg_pool: asyncpg.Pool | None = None
+
+
+async def _init_asyncpg_pool() -> None:
+    global _asyncpg_pool
+    db_url = settings.database_url
+    if not db_url:
+        logger.warning(
+            "database_url not configured — RAG vector search will be unavailable. "
+            "Set DATABASE_URL env var to enable full RAG."
+        )
+        return
+    # Strip SQLAlchemy driver prefix so asyncpg can use the URL directly
+    db_url = (
+        db_url.replace("postgresql+asyncpg://", "postgresql://")
+              .replace("postgresql+psycopg2://", "postgresql://")
+    )
+    try:
+        _asyncpg_pool = await asyncpg.create_pool(
+            db_url,
+            min_size=2,
+            max_size=10,
+            command_timeout=30,
+        )
+        logger.info("asyncpg pool for RAG initialised (min=2 max=10)")
+    except Exception as exc:
+        logger.warning(f"asyncpg pool creation failed: {exc} — RAG vector search will be unavailable")
+
+
+def get_asyncpg_pool() -> asyncpg.Pool | None:
+    """Return the asyncpg pool, or None if not configured/available."""
+    return _asyncpg_pool
+
+
+# ---------------------------------------------------------------------------
+# RAG retriever singleton — set during app startup after pool is ready
+# ---------------------------------------------------------------------------
+_rag_retriever = None  # type: ignore[assignment]
+
+
+def set_rag_retriever(retriever) -> None:
+    global _rag_retriever
+    _rag_retriever = retriever
+
+
+def get_rag_retriever():
+    """Return the RAGRetriever singleton, or None if not initialised."""
+    return _rag_retriever
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle: called from FastAPI lifespan
 # ---------------------------------------------------------------------------
 async def startup() -> None:
@@ -91,12 +150,15 @@ async def startup() -> None:
     get_openai_client()
     get_redis_client()
     get_supabase_client()
+    await _init_asyncpg_pool()
 
 
 async def shutdown() -> None:
     """Gracefully close all shared clients."""
-    global _http2_client, _redis_client
+    global _http2_client, _redis_client, _asyncpg_pool
     if _http2_client and not _http2_client.is_closed:
         await _http2_client.aclose()
     if _redis_client:
         await _redis_client.aclose()
+    if _asyncpg_pool:
+        await _asyncpg_pool.close()

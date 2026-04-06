@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     db_encryption_key: str = ""
 
     # Office hours & routing
-    office_hours_start: str = "00:00"
-    office_hours_end: str = "23:59"
+    office_hours_start: str = "09:00"
+    office_hours_end: str = "18:00"
     office_timezone: str = "America/New_York"
     oncall_attorney_phone: str = ""
     law_firm_name: str = "Immigration Law Office"

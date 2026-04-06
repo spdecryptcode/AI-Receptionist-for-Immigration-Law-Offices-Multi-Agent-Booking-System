@@ -12,6 +12,7 @@ twilio>=9.0.0
 deepgram-sdk>=3.0.0,<4.0.0
 openai>=1.0.0
 elevenlabs>=1.0.0
+tiktoken>=0.7.0           # token counting for RAG context budget
 
 # HTTP client (HTTP/2 for OpenAI connection pooling)
 httpx[http2]>=0.27.0

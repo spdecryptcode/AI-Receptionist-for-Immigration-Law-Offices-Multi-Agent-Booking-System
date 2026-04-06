@@ -176,6 +176,25 @@ class GHLClient:
 
     # ─── Contact endpoints ────────────────────────────────────────────────────
 
+    async def search_contacts_by_query(self, query: str, limit: int = 5) -> list[dict]:
+        """
+        Free-text search across GHL contacts (name, email, or phone).
+        Returns up to `limit` results. Used by staff chat client lookup.
+        """
+        if not _creds_available():
+            return []
+        try:
+            data = await self._get(
+                "/contacts/",
+                params={"locationId": self._location_id, "query": query, "limit": limit},
+            )
+            return (data.get("contacts") or [])[:limit]
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                f"GHL search_contacts_by_query ({query!r}): HTTP {exc.response.status_code}"
+            )
+            return []
+
     async def search_contact_by_phone(self, phone: str) -> dict | None:
         """
         Search for an existing GHL contact by phone number.

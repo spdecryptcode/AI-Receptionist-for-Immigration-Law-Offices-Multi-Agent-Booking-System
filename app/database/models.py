@@ -274,6 +274,15 @@ class CallbackStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class KnowledgeSourceType(str, enum.Enum):
+    faq = "faq"
+    case_guide = "case_guide"
+    firm_policy = "firm_policy"
+    uscis_form = "uscis_form"
+    conversation_transcript = "conversation_transcript"
+    policy_news = "policy_news"
+
+
 # ---------------------------------------------------------------------------
 # 1. clients
 # ---------------------------------------------------------------------------
@@ -811,3 +820,76 @@ class CallbackQueue(Base):
     # Relationships
     client = relationship("Client", back_populates="callbacks")
     previous_conversation = relationship("Conversation", back_populates="callbacks")
+
+
+# ---------------------------------------------------------------------------
+# RAG knowledge base tables
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id = _uuid_pk()
+    title = Column(Text, nullable=False)
+    source_type = Column(
+        Enum(KnowledgeSourceType, name="knowledge_source_type_enum"),
+        nullable=False,
+    )
+    language = Column(String(10), nullable=False, server_default="en")
+    content_hash = Column(Text, nullable=False, unique=True)
+    doc_metadata = Column("metadata", JSONB, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _now()
+    updated_at = _updated_at()
+
+    # Relationships
+    chunks = relationship("KnowledgeChunk", back_populates="document", cascade="all, delete-orphan")
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id = _uuid_pk()
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_chunk_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    context_prefix = Column(Text, nullable=True)
+    embedding = Column(Vector(1536), nullable=True)
+    language = Column(String(10), nullable=False, server_default="en")
+    quality_score = Column(Float, nullable=False, server_default="0")
+    doc_metadata = Column("metadata", JSONB, nullable=True)
+
+    # Relationships
+    document = relationship("KnowledgeDocument", back_populates="chunks")
+    children = relationship("KnowledgeChunk", foreign_keys=[parent_chunk_id])
+
+
+class RAGQueryLog(Base):
+    __tablename__ = "rag_query_logs"
+
+    id = _uuid_pk()
+    query_hash = Column(Text, nullable=False, index=True)
+    channel = Column(String(20), nullable=False)
+    path = Column(String(10), nullable=False, server_default="full")
+    top_score = Column(Float, nullable=True)
+    chunks_returned = Column(Integer, nullable=False, server_default="0")
+    confidence_gate_triggered = Column(Boolean, nullable=False, server_default="false")
+    cross_language_fallback = Column(Boolean, nullable=False, server_default="false")
+    cache_hit = Column(Boolean, nullable=False, server_default="false")
+    retrieval_ms = Column(Integer, nullable=True)
+    language = Column(String(10), nullable=False, server_default="en")
+    call_sid = Column(String(255), nullable=True)
+    session_id = Column(Text, nullable=True)
+    created_at = _now()

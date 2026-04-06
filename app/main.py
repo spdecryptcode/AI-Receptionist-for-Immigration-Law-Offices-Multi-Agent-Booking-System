@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan: startup → yield → shutdown."""
     # ── Startup ─────────────────────────────────────────────────────────────
     configure_logging(level="INFO", json_output=True)
-    logger.info("Starting IVR Immigration AI Receptionist")
+    logger.info("Starting Aria — AI Intake Agent")
     await dependencies.startup()
     logger.info("All shared clients initialized")
 
@@ -48,6 +48,15 @@ async def lifespan(app: FastAPI):
         _start_callback_worker(), name="callback_queue_worker"
     )
     logger.info("Callback queue consumer started")
+
+    # Initialize RAG retriever singleton and sync prompt files
+    await _init_rag()
+
+    # Nightly intake-pattern aggregation task (runs every 24 h)
+    nightly_task = asyncio.create_task(
+        _run_nightly_aggregation(), name="nightly_rag_aggregation"
+    )
+    logger.info("Nightly RAG aggregation task scheduled")
 
     yield
 
@@ -64,19 +73,13 @@ async def lifespan(app: FastAPI):
             logger.warning("Cancelling call task that did not finish within 30s")
             task.cancel()
 
-    # Stop DB worker
-    db_worker_task.cancel()
-    try:
-        await db_worker_task
-    except asyncio.CancelledError:
-        pass
-
-    # Stop callback worker
-    callback_worker_task.cancel()
-    try:
-        await callback_worker_task
-    except asyncio.CancelledError:
-        pass
+    # Stop background tasks
+    for _task in (db_worker_task, callback_worker_task, nightly_task):
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
 
     await dependencies.shutdown()
     logger.info("Shutdown complete")
@@ -86,7 +89,7 @@ async def lifespan(app: FastAPI):
 # App instance
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="IVR Immigration AI Receptionist",
+    title="Aria — AI Intake Agent",
     description="Real-time voice AI pipeline for immigration law intake",
     version="1.0.0",
     lifespan=lifespan,
@@ -168,17 +171,16 @@ def register_routers():
     from app.voice.websocket_handler import router as ws_router
     from app.social.webhook_handler import router as social_router
     from app.dashboard.router import router as dashboard_router
+    from app.rag.router import router as rag_router
+    from app.chat.router import router as chat_router
 
-    # twilio_router already has prefix="/twilio" → routes at /twilio/*
-    # ghl_router already has prefix="/ghl"       → routes at /ghl/*
-    # ws_router has no top-level prefix          → routes at /ws/*
-    # social_router has prefix="/social"         → routes at /social/*
-    # dashboard_router has prefix="/dashboard"   → routes at /dashboard/*
     app.include_router(twilio_router)
     app.include_router(ghl_router)
     app.include_router(ws_router)
     app.include_router(social_router)
     app.include_router(dashboard_router)
+    app.include_router(rag_router)
+    app.include_router(chat_router)
 
 
 register_routers()
@@ -194,3 +196,48 @@ async def _start_callback_worker() -> None:
     """Wrapper to import and run the outbound callback queue consumer."""
     from app.telephony.outbound_callback import callback_queue_loop
     await callback_queue_loop()
+
+
+async def _init_rag() -> None:
+    """
+    Initialise the RAGRetriever singleton and sync prompt files into the knowledge base.
+    Runs at startup; errors are logged but do not abort boot.
+    """
+    try:
+        from pathlib import Path
+        from app.rag.retrieval import RAGRetriever
+        from app.rag.ingestion import DocumentIngester
+        from app.dependencies import set_rag_retriever, get_asyncpg_pool
+
+        if get_asyncpg_pool() is None:
+            logger.warning("RAG: asyncpg pool unavailable — retriever not initialised")
+            return
+
+        retriever = RAGRetriever()
+        set_rag_retriever(retriever)
+        logger.info("RAG retriever initialised")
+
+        # Sync prompt markdown files into the knowledge base on every startup
+        ingester = DocumentIngester()
+        await ingester.sync_prompt_files(Path("prompts"))
+    except Exception as exc:
+        logger.error(f"RAG init error (non-fatal): {exc}", exc_info=True)
+
+
+async def _run_nightly_aggregation() -> None:
+    """
+    Background task: run the intake-pattern aggregation every 24 hours.
+    Fires immediately on first run then sleeps until the same time tomorrow.
+    Any errors are caught and logged; the loop continues.
+    """
+    _INTERVAL = 24 * 3600  # seconds
+    await asyncio.sleep(60)  # short delay so DB pool is warmed first
+    while True:
+        try:
+            from app.rag.ingestion import DocumentIngester
+            logger.info("Nightly RAG aggregation starting")
+            await DocumentIngester().aggregate_intake_patterns()
+            logger.info("Nightly RAG aggregation complete")
+        except Exception as exc:
+            logger.error(f"Nightly RAG aggregation error: {exc}", exc_info=True)
+        await asyncio.sleep(_INTERVAL)

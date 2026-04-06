@@ -172,7 +172,9 @@ class TestDeepgramSTTHandlers:
     async def test_fires_on_transcript_for_final_result(self):
         stt, on_tx, _, _ = self._make_stt_with_callbacks()
         result = self._make_transcript_result("hello world", is_final=True)
+        # Buffer is filled on final transcript; callback fires when UtteranceEnd flushes it
         await stt._handle_transcript(None, result=result)
+        await stt._handle_utterance_end()
         on_tx.assert_awaited_once()
         args = on_tx.call_args[0]
         assert args[0] == "hello world"

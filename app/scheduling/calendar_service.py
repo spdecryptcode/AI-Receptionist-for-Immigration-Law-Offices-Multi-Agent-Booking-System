@@ -178,7 +178,7 @@ async def book_appointment(
     if caller_name:
         title = f"{caller_name} — {title}"
 
-    notes = f"Booked via AI receptionist. Language: {lang_label}."
+    notes = f"Booked via Aria. Language: {lang_label}."
     if case_type:
         notes += f" Case type: {case_type}."
 

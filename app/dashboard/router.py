@@ -233,7 +233,7 @@ def _fetch_stats_sync() -> dict:
     # ── Recent calls ─────────────────────────────────────────────────────────
     r = supabase.table("conversations").select(
         "call_sid,caller_phone,caller_name,started_at,updated_at,duration_seconds,call_outcome,channel,scheduled_at,transferred_at"
-    ).order("started_at", desc=True).limit(50).execute()
+    ).order("started_at", desc=True).limit(200).execute()
     recent_calls = []
     seen_sids: set[str] = set()
     for row in (r.data or []):
@@ -281,14 +281,14 @@ def _fetch_stats_sync() -> dict:
                 "has_transcript": True,
             })
 
-    # Sort all calls newest-first by started_at, then trim to 50
+    # Sort all calls newest-first by started_at, then trim to 200
     recent_calls.sort(key=lambda c: c.get("started_at") or "", reverse=True)
-    recent_calls = recent_calls[:50]
+    recent_calls = recent_calls[:200]
 
     # ── Intake records ───────────────────────────────────────────────────────
     r = supabase.table("immigration_intakes").select(
         "call_sid,full_name,caller_phone,case_type,urgency_reason,current_immigration_status,created_at"
-    ).order("created_at", desc=True).limit(25).execute()
+    ).order("created_at", desc=True).limit(200).execute()
     intake_sids = [row["call_sid"] for row in (r.data or []) if row.get("call_sid")]
     urgency_map: dict[str, str] = {}
     if intake_sids:
@@ -464,7 +464,8 @@ _LOGIN_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IVR Immigration \u2014 Sign In</title>
+  <title>Aria \u2014 Sign In</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Cpath d='M5 28L16 4L27 28' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Crect x='11.5' y='17' width='2' height='6' rx='1' fill='white'/%3E%3Crect x='15' y='14.5' width='2' height='8.5' rx='1' fill='white'/%3E%3Crect x='18.5' y='17' width='2' height='6' rx='1' fill='white'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -537,13 +538,16 @@ _LOGIN_HTML = """<!DOCTYPE html>
   <div class="card">
     <div class="logo-wrap">
       <div class="logo-icon">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 20.5L12 3.5L20 20.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="8.9" y="13.5" width="1.4" height="3.5" rx="0.7" fill="white"/>
+          <rect x="11.3" y="11.5" width="1.4" height="5.5" rx="0.7" fill="white"/>
+          <rect x="13.7" y="13.5" width="1.4" height="3.5" rx="0.7" fill="white"/>
         </svg>
       </div>
       <div class="logo-text">
-        <h1>IVR Immigration</h1>
-        <p>Analytics Dashboard</p>
+        <h1>Aria</h1>
+        <p>AI Intake Agent</p>
       </div>
     </div>
     <div class="divider"></div>
@@ -623,7 +627,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IVR Immigration \u2014 Dashboard</title>
+  <title>Aria \u2014 Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Cpath d='M5 28L16 4L27 28' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Crect x='11.5' y='17' width='2' height='6' rx='1' fill='white'/%3E%3Crect x='15' y='14.5' width='2' height='8.5' rx='1' fill='white'/%3E%3Crect x='18.5' y='17' width='2' height='6' rx='1' fill='white'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -673,7 +678,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .refresh-btn svg { width: 13px; height: 13px; }
     .last-updated { font-size: 11px; color: var(--text-3); }
     /* Content */
-    .content { flex: 1; overflow-y: auto; padding: 24px; }
+    .content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    #analyticsView { flex: 1; overflow-y: auto; padding: 24px; }
     .kpi-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 24px; }
     @media (max-width: 1200px) { .kpi-grid { grid-template-columns: repeat(2,1fr); } }
     .kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
@@ -712,6 +718,15 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    .typing-dots{display:flex;align-items:center;gap:5px;padding:10px 14px;
+      background:var(--surface);border:1px solid var(--border);
+      border-radius:4px 16px 16px 16px;width:fit-content}
+    .typing-dots span{width:7px;height:7px;border-radius:50%;background:#a5b4fc;
+      animation:tdBounce 1.3s ease infinite}
+    .typing-dots span:nth-child(2){animation-delay:.18s}
+    .typing-dots span:nth-child(3){animation-delay:.36s}
+    @keyframes tdBounce{0%,60%,100%{transform:translateY(0);background:#a5b4fc}
+      30%{transform:translateY(-6px);background:#6366f1}}
   </style>
 </head>
 <body>
@@ -726,20 +741,24 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sidebar-header">
       <div class="sidebar-logo">
         <div class="sidebar-logo-icon">
-          <svg viewBox="0 0 24 24"><path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 20.5L12 3.5L20 20.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8.9" y="13.5" width="1.4" height="3.5" rx="0.7" fill="white"/><rect x="11.3" y="11.5" width="1.4" height="5.5" rx="0.7" fill="white"/><rect x="13.7" y="13.5" width="1.4" height="3.5" rx="0.7" fill="white"/></svg>
         </div>
         <div class="sidebar-logo-text">
-          <span>IVR Immigration</span>
-          <span>AI Receptionist</span>
+          <span>Aria</span>
+          <span>AI Intake Agent</span>
         </div>
       </div>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-section">
         <div class="nav-label">Overview</div>
-        <div class="nav-item active" onclick="window.scrollTo(0,0)">
+        <div class="nav-item active" id="navDashboard" onclick="showView('analytics')">
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           Dashboard
+        </div>
+        <div class="nav-item" id="navChat" onclick="showView('chat')">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          AI Chat
         </div>
       </div>
       <div class="nav-section">
@@ -792,10 +811,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="main">
     <header class="topbar">
       <div>
-        <div class="page-title">Analytics Overview</div>
+        <div class="page-title" id="pageTitle">Analytics Overview</div>
         <div class="page-sub" id="dateRange">Last 30 days</div>
       </div>
-      <div class="topbar-right">
+      <div class="topbar-right" id="topbarRight">
         <div class="badge-live"><span class="dot"></span>Live</div>
         <span class="last-updated" id="lastUpdated"></span>
         <button class="refresh-btn" onclick="loadData()">
@@ -806,6 +825,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </header>
 
     <div class="content">
+      <div id="analyticsView">
       <div class="kpi-grid" id="kpiGrid"></div>
 
       <div class="chart-card" id="callsSection" style="margin-bottom:16px">
@@ -857,40 +877,65 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="table-header-bar">
           <div>
             <div class="chart-title">Recent Calls</div>
-            <div class="chart-sub" style="margin-top:2px">Latest 20 inbound interactions</div>
+            <div class="chart-sub" style="margin-top:2px">Click any column header to sort &nbsp;&middot;&nbsp; 20 per page</div>
+          </div>
+          <div style="position:relative;flex-shrink:0">
+            <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#64748b;pointer-events:none">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+            <input id="callsSearch" type="text" placeholder="Search calls…" oninput="_callsSearchInput()" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 10px 7px 32px;font-size:13px;font-family:inherit;color:var(--text);outline:none;width:210px;transition:border-color 0.15s" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='var(--border)'">
           </div>
         </div>
         <div style="overflow-x:auto">
-          <table>
+          <table id="callsTable">
             <thead><tr>
-              <th>Caller</th><th>Phone</th><th>Channel</th>
-              <th>Outcome</th><th>Duration</th><th>Time</th>
+              <th data-col="name" onclick="sortCalls('name')" style="cursor:pointer;user-select:none">Caller <span class="sh"></span></th>
+              <th data-col="phone" onclick="sortCalls('phone')" style="cursor:pointer;user-select:none">Phone <span class="sh"></span></th>
+              <th data-col="channel" onclick="sortCalls('channel')" style="cursor:pointer;user-select:none">Channel <span class="sh"></span></th>
+              <th data-col="outcome" onclick="sortCalls('outcome')" style="cursor:pointer;user-select:none">Outcome <span class="sh"></span></th>
+              <th data-col="duration" onclick="sortCalls('duration')" style="cursor:pointer;user-select:none">Duration <span class="sh"></span></th>
+              <th data-col="started_at" onclick="sortCalls('started_at')" style="cursor:pointer;user-select:none;color:#6366f1">Time <span class="sh" style="color:#6366f1">&darr;</span></th>
+              <th>Transcript</th>
             </tr></thead>
             <tbody id="callsTableBody">
-              <tr><td colspan="6" class="empty-state">Loading\u2026</td></tr>
+              <tr><td colspan="7" class="empty-state">Loading\u2026</td></tr>
             </tbody>
           </table>
         </div>
+        <div id="callsPager"></div>
       </div>
 
       <div class="table-card" id="intakeSection" style="margin-bottom:16px">
         <div class="table-header-bar">
           <div>
             <div class="chart-title">Immigration Intake Records</div>
-            <div class="chart-sub" style="margin-top:2px">Latest 25 structured intake records per caller</div>
+            <div class="chart-sub" style="margin-top:2px">Click any column header to sort &nbsp;&middot;&nbsp; 20 per page</div>
+          </div>
+          <div style="position:relative;flex-shrink:0">
+            <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#64748b;pointer-events:none">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+            <input id="intakeSearch" type="text" placeholder="Search intakes…" oninput="_intakeSearchInput()" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 10px 7px 32px;font-size:13px;font-family:inherit;color:var(--text);outline:none;width:210px;transition:border-color 0.15s" onfocus="this.style.borderColor='#6366f1'" onblur="this.style.borderColor='var(--border)'">
           </div>
         </div>
         <div style="overflow-x:auto">
-          <table>
+          <table id="intakeTable">
             <thead><tr>
-              <th>Caller</th><th>Phone</th><th>Case Type</th><th>Urgency</th>
-              <th>Court Date</th><th>Imm. Status</th><th>Detained</th><th>Complete</th><th>Time</th>
+              <th data-col="name" onclick="sortIntake('name')" style="cursor:pointer;user-select:none">Caller <span class="sh"></span></th>
+              <th data-col="phone" onclick="sortIntake('phone')" style="cursor:pointer;user-select:none">Phone <span class="sh"></span></th>
+              <th data-col="case_type" onclick="sortIntake('case_type')" style="cursor:pointer;user-select:none">Case Type <span class="sh"></span></th>
+              <th data-col="urgency" onclick="sortIntake('urgency')" style="cursor:pointer;user-select:none">Urgency <span class="sh"></span></th>
+              <th>Court Date</th>
+              <th data-col="status" onclick="sortIntake('status')" style="cursor:pointer;user-select:none">Imm. Status <span class="sh"></span></th>
+              <th>Detained</th><th>Complete</th>
+              <th data-col="started_at" onclick="sortIntake('started_at')" style="cursor:pointer;user-select:none;color:#6366f1">Time <span class="sh" style="color:#6366f1">&darr;</span></th>
             </tr></thead>
             <tbody id="intakeTableBody">
               <tr><td colspan="9" class="empty-state">Loading\u2026</td></tr>
             </tbody>
           </table>
         </div>
+        <div id="intakePager"></div>
       </div>
 
       <!-- ── Conversation Intelligence ─────────────────────────────────── -->
@@ -973,6 +1018,58 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      </div><!-- /analyticsView -->
+
+      <!-- ── Chat View ──────────────────────────────────────── -->
+      <div id="chatView" style="display:none;flex:1;overflow:hidden;flex-direction:column">
+        <div style="background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              <svg width="17" height="17" fill="white" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            </div>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--text)">Staff AI Assistant</div>
+              <div id="chatStatus" style="font-size:11px;color:#94a3b8">Ready</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+              <button id="langEN" onclick="setChatLang('en')" style="padding:6px 12px;font-size:12px;font-weight:500;border:none;cursor:pointer;font-family:inherit;background:#6366f1;color:#fff;transition:background 0.1s">EN</button>
+              <button id="langES" onclick="setChatLang('es')" style="padding:6px 12px;font-size:12px;font-weight:500;border:none;cursor:pointer;font-family:inherit;background:transparent;color:var(--text-2);transition:background 0.1s">ES</button>
+            </div>
+            <button onclick="newChatSession()" style="display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;color:var(--text-2);cursor:pointer;font-family:inherit;transition:border-color 0.12s">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New Chat
+            </button>
+          </div>
+        </div>
+        <div id="chatMessages" style="flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:14px;background:var(--bg)">
+          <div id="chatWelcome" style="text-align:center;padding:48px 20px">
+            <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+              <svg width="24" height="24" fill="white" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            </div>
+            <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Staff AI Assistant</div>
+            <div style="font-size:13px;color:var(--text-3);max-width:400px;margin:0 auto;line-height:1.6">Internal tool for attorneys, paralegals, and receptionists. Ask about caller situations, urgency triage, case types, or look up recent calls and intake records.</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:20px;max-width:520px;margin-left:auto;margin-right:auto">
+              <button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit;transition:border-color 0.12s">What urgency flags should I watch for?</button>
+              <button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit;transition:border-color 0.12s">Explain DACA renewal eligibility</button>
+              <button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit;transition:border-color 0.12s">What intake questions to ask for a removal defense case?</button>
+              <button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit;transition:border-color 0.12s">Summarise recent high-urgency calls</button>
+            </div>
+          </div>
+        </div>
+        <div style="background:var(--surface);border-top:1px solid var(--border);padding:16px 24px;flex-shrink:0">
+          <div style="display:flex;gap:10px;align-items:flex-end;max-width:900px;margin:0 auto">
+            <textarea id="chatInput" disabled placeholder="Ask about a caller, case type, urgency triage, or immigration procedure\u2026" oninput="autoResizeTextarea(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}" style="flex:1;resize:none;border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;font-family:inherit;color:var(--text);background:var(--bg);outline:none;line-height:1.5;min-height:42px;max-height:120px;overflow-y:auto;transition:border-color 0.12s"></textarea>
+            <button id="chatSendBtn" disabled onclick="sendChatMessage()" style="height:42px;width:42px;border-radius:10px;background:#6366f1;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0.5;transition:opacity 0.12s">
+              <svg width="16" height="16" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+          <div style="text-align:center;font-size:11px;color:#cbd5e1;margin-top:8px">Internal staff tool \u00b7 Shift+Enter for new line \u00b7 Not a substitute for legal advice</div>
+        </div>
+      </div><!-- /chatView -->
+
     </div>
   </div>
 </div>
@@ -1044,22 +1141,88 @@ function hbar(id,eid,data,cmap){
     options:{indexAxis:'y',responsive:true,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,padding:10}},
       scales:{x:{beginAtZero:true,ticks:{stepSize:1,color:'#94a3b8'},grid:{color:'#f1f5f9'},border:{dash:[4,4]}},y:{ticks:{color:'#374151',font:{size:11}},grid:{display:false}}}}});
 }
-function renderTable(data){
+// ── Table paging + sorting + search state ────────────────────────────────────
+let _callsData=[],_callsPage=0,_callsSort={col:'started_at',dir:-1},_callsQ='';
+let _intakeData=[],_intakePage=0,_intakeSort={col:'started_at',dir:-1},_intakeQ='';
+const _PAGE=20;
+function _matchQ(row,q){
+  if(!q) return true;
+  const words=q.toLowerCase().split(/\s+/).filter(Boolean);
+  const haystack=Object.values(row).map(v=>v==null?'':String(v).toLowerCase()).join(' ');
+  return words.every(w=>haystack.includes(w));
+}
+function _callsSearchInput(){_callsQ=document.getElementById('callsSearch').value;_callsPage=0;_renderCallsPage();}
+function _intakeSearchInput(){_intakeQ=document.getElementById('intakeSearch').value;_intakePage=0;_renderIntakePage();}
+function _filtered(data,q){return q?data.filter(r=>_matchQ(r,q)):data;}
+function _cmp(a,b,col,dir){
+  const av=a[col]??'',bv=b[col]??'';
+  if(typeof av==='number'&&typeof bv==='number') return dir*(av-bv);
+  return dir*String(av).localeCompare(String(bv));
+}
+function _sortIcon(key,s){
+  if(s.col!==key) return '<span style="color:#cbd5e1;margin-left:3px">\u21c5</span>';
+  return s.dir===1?'<span style="color:#6366f1;margin-left:3px">\u2191</span>':'<span style="color:#6366f1;margin-left:3px">\u2193</span>';
+}
+function _mkPager(page,total,prevFn,nextFn,el){
+  if(!el) return;
+  const pages=Math.ceil(total/_PAGE)||1;
+  const from=total?page*_PAGE+1:0,to=Math.min((page+1)*_PAGE,total);
+  const prevDis=page===0,nextDis=page>=pages-1;
+  const btnS=(dis)=>`background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 13px;font-size:12px;cursor:${dis?'default':'pointer'};color:${dis?'#94a3b8':'var(--text)'};font-family:inherit`;
+  el.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px;color:var(--text-2)"><span style="font-size:12px">${from}\u2013${to} of ${total}</span><div style="display:flex;align-items:center;gap:6px"><button onclick="${prevFn}" ${prevDis?'disabled':''} style="${btnS(prevDis)}">&lsaquo; Prev</button><span style="background:#f1f5f9;border-radius:6px;padding:5px 10px;font-size:12px;color:#475569;white-space:nowrap">Page ${page+1} / ${pages}</span><button onclick="${nextFn}" ${nextDis?'disabled':''} style="${btnS(nextDis)}">Next &rsaquo;</button></div></div>`;
+}
+
+// ── Calls table ───────────────────────────────────────────────────────────────
+function sortCalls(col){
+  if(_callsSort.col===col)_callsSort.dir*=-1;else{_callsSort.col=col;_callsSort.dir=1;}
+  _callsPage=0;_renderCallsPage();
+}
+function _callsPrev(){if(_callsPage>0){_callsPage--;_renderCallsPage();}}
+function _callsNext(){if((_callsPage+1)*_PAGE<_filtered(_callsData,_callsQ).length){_callsPage++;_renderCallsPage();}}
+function _renderCallsPage(){
+  const filtered=_filtered(_callsData,_callsQ);
+  const sorted=[...filtered].sort((a,b)=>_cmp(a,b,_callsSort.col,_callsSort.dir));
+  const page=sorted.slice(_callsPage*_PAGE,(_callsPage+1)*_PAGE);
   const tb=document.getElementById('callsTableBody');
-  if(!data.length){tb.innerHTML='<tr><td colspan="7" class="empty-state" style="padding:40px">No calls recorded yet</td></tr>';return;}
-  tb.innerHTML=data.map(r=>{
+  document.querySelectorAll('#callsTable th[data-col]').forEach(th=>{
+    const c=th.dataset.col;
+    th.style.cssText=_callsSort.col===c?'cursor:pointer;user-select:none;color:#6366f1':'cursor:pointer;user-select:none';
+    th.querySelector('.sh').innerHTML=_sortIcon(c,_callsSort);
+  });
+  const noMsg=_callsQ?`No calls match \u201c${_esc(_callsQ)}\u201d`:'No calls recorded yet';
+  if(!page.length){tb.innerHTML=`<tr><td colspan="7" class="empty-state" style="padding:40px">${noMsg}</td></tr>`;}
+  else tb.innerHTML=page.map(r=>{
     const bs=OUTCOME_B[r.outcome]||'background:#f8fafc;color:#475569;border:1px solid #e2e8f0';
     const txBtn=r.has_transcript
       ?`<button onclick="viewTranscript('${r.sid}','${(r.name||'').replace(/'/g,"\\'")}','${r.phone||''}')" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;white-space:nowrap">View</button>`
       :`<span style="color:#94a3b8;font-size:12px">\u2014</span>`;
     return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td><span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">${fmt(r.channel)}</span></td><td><span class="badge" style="${bs}">${fmt(r.outcome)}</span></td><td>${fmtD(r.duration)}</td><td>${fmtT(r.started_at)}</td><td>${txBtn}</td></tr>`;
   }).join('');
+  _mkPager(_callsPage,filtered.length,'_callsPrev()','_callsNext()',document.getElementById('callsPager'));
 }
+function renderTable(data){_callsData=data||[];_callsQ='';const el=document.getElementById('callsSearch');if(el)el.value='';_callsPage=0;_renderCallsPage();}
+
+// ── Intake table ──────────────────────────────────────────────────────────────
 const URGENCY_B={critical:'background:#fef2f2;color:#dc2626;border:1px solid #fecaca',high:'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa',medium:'background:#fffbeb;color:#b45309;border:1px solid #fde68a',routine:'background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0'};
-function renderIntakeTable(data){
+function sortIntake(col){
+  if(_intakeSort.col===col)_intakeSort.dir*=-1;else{_intakeSort.col=col;_intakeSort.dir=1;}
+  _intakePage=0;_renderIntakePage();
+}
+function _intakePrev(){if(_intakePage>0){_intakePage--;_renderIntakePage();}}
+function _intakeNext(){if((_intakePage+1)*_PAGE<_filtered(_intakeData,_intakeQ).length){_intakePage++;_renderIntakePage();}}
+function _renderIntakePage(){
+  const filtered=_filtered(_intakeData,_intakeQ);
+  const sorted=[...filtered].sort((a,b)=>_cmp(a,b,_intakeSort.col,_intakeSort.dir));
+  const page=sorted.slice(_intakePage*_PAGE,(_intakePage+1)*_PAGE);
   const tb=document.getElementById('intakeTableBody');
-  if(!data||!data.length){tb.innerHTML='<tr><td colspan="9" class="empty-state" style="padding:40px">No intake records yet</td></tr>';return;}
-  tb.innerHTML=data.map(r=>{
+  document.querySelectorAll('#intakeTable th[data-col]').forEach(th=>{
+    const c=th.dataset.col;
+    th.style.cssText=_intakeSort.col===c?'cursor:pointer;user-select:none;color:#6366f1':'cursor:pointer;user-select:none';
+    th.querySelector('.sh').innerHTML=_sortIcon(c,_intakeSort);
+  });
+  const noMsg=_intakeQ?`No records match \u201c${_esc(_intakeQ)}\u201d`:'No intake records yet';
+  if(!page.length){tb.innerHTML=`<tr><td colspan="9" class="empty-state" style="padding:40px">${noMsg}</td></tr>`;}
+  else tb.innerHTML=page.map(r=>{
     const cs=CASE_C[r.case_type]||FB[7];
     const caseBadge=r.case_type?`<span class="badge" style="background:${cs}22;color:${cs};border:1px solid ${cs}44">${fmt(r.case_type)}</span>`:'\u2014';
     const us=URGENCY_B[r.urgency]||'background:#f8fafc;color:#475569;border:1px solid #e2e8f0';
@@ -1070,7 +1233,9 @@ function renderIntakeTable(data){
     const courtDate=r.court_date?new Date(r.court_date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'\u2014';
     return`<tr><td class="td-main">${r.name}</td><td><span class="mono">${r.phone||'\u2014'}</span></td><td>${caseBadge}</td><td>${urgBadge}</td><td>${courtDate}</td><td>${fmt(r.status)||'\u2014'}</td><td>${detained}</td><td>${complete}</td><td>${fmtT(r.started_at)}</td></tr>`;
   }).join('');
+  _mkPager(_intakePage,filtered.length,'_intakePrev()','_intakeNext()',document.getElementById('intakePager'));
 }
+function renderIntakeTable(data){_intakeData=data||[];_intakeQ='';const el=document.getElementById('intakeSearch');if(el)el.value='';_intakePage=0;_renderIntakePage();}
 
 // ── Helpers for new analytics charts ─────────────────────────────────────────
 function hbarAvg(id,eid,data,labelKey,valKey,unit,color){
@@ -1181,6 +1346,166 @@ async function loadData(){
 
 loadData();
 setInterval(loadData,5*60*1000);
+
+// ── View switching ────────────────────────────────────────────────────────
+let _currentView='analytics';
+function showView(name){
+  _currentView=name;
+  document.getElementById('analyticsView').style.display=name==='analytics'?'':'none';
+  const cv=document.getElementById('chatView');
+  cv.style.display=name==='chat'?'flex':'none';
+  document.getElementById('navDashboard').classList.toggle('active',name==='analytics');
+  document.getElementById('navChat').classList.toggle('active',name==='chat');
+  if(name==='chat'){
+    document.getElementById('pageTitle').textContent='AI Chat';
+    document.getElementById('dateRange').style.display='none';
+    document.getElementById('topbarRight').style.display='none';
+    if(!chatSessionId) initChatSession(chatLang);
+  } else {
+    document.getElementById('pageTitle').textContent='Analytics Overview';
+    document.getElementById('dateRange').style.display='';
+    document.getElementById('topbarRight').style.display='';
+  }
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+let chatWs=null,chatSessionId=null,chatLang='en',_aiBubble=null,_chatBusy=false,_typingBubble=null;
+
+async function initChatSession(lang){
+  chatLang=lang;
+  document.getElementById('chatStatus').textContent='Connecting\u2026';
+  document.getElementById('chatSendBtn').disabled=true;
+  document.getElementById('chatSendBtn').style.opacity='0.5';
+  document.getElementById('chatInput').disabled=true;
+  try{
+    const res=await fetch('/chat/session',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lang,mode:'staff'})});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const {session_id,ws_token}=await res.json();
+    chatSessionId=session_id;
+    const proto=location.protocol==='https:'?'wss':'ws';
+    const ws=new WebSocket(`${proto}://${location.host}/chat/ws/${session_id}?token=${ws_token}`);
+    ws.onopen=()=>{
+      chatWs=ws;
+      document.getElementById('chatStatus').textContent='Connected';
+      document.getElementById('chatSendBtn').disabled=false;
+      document.getElementById('chatSendBtn').style.opacity='1';
+      document.getElementById('chatInput').disabled=false;
+      document.getElementById('chatInput').focus();
+    };
+    ws.onmessage=onChatMsg;
+    ws.onclose=()=>{
+      chatWs=null;
+      document.getElementById('chatStatus').textContent='Disconnected \u2014 click New Chat to reconnect';
+      document.getElementById('chatSendBtn').disabled=true;
+      document.getElementById('chatSendBtn').style.opacity='0.5';
+    };
+    ws.onerror=()=>document.getElementById('chatStatus').textContent='Connection error';
+  }catch(e){
+    document.getElementById('chatStatus').textContent='Error: '+e.message;
+  }
+}
+
+function _showTyping(){
+  if(_typingBubble) return;
+  const msgs=document.getElementById('chatMessages');
+  const wrap=document.createElement('div');
+  wrap.style.cssText='display:flex;align-items:flex-start;gap:10px;margin-bottom:2px';
+  wrap.innerHTML=`<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px"><svg width="13" height="13" fill="white" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div><div class="typing-dots"><span></span><span></span><span></span></div>`;
+  msgs.appendChild(wrap);
+  _typingBubble=wrap;
+  requestAnimationFrame(()=>{ msgs.scrollTop=msgs.scrollHeight; });
+}
+function _hideTyping(){
+  if(_typingBubble){ _typingBubble.remove(); _typingBubble=null; }
+}
+
+function onChatMsg(event){
+  const d=JSON.parse(event.data);
+  if(d.type==='token'){
+    if(!_aiBubble){ _hideTyping(); _aiBubble=_mkAiBubble(); }
+    _aiBubble.textContent+=d.content;
+    _scrollChat();
+  } else if(d.type==='done'){
+    _hideTyping(); _aiBubble=null; _chatBusy=false;
+    document.getElementById('chatSendBtn').disabled=false;
+    document.getElementById('chatSendBtn').style.opacity='1';
+  } else if(d.type==='error'){
+    _hideTyping(); _aiBubble=null; _chatBusy=false;
+    _chatSysMsg('\u26a0 '+d.detail);
+    document.getElementById('chatSendBtn').disabled=false;
+    document.getElementById('chatSendBtn').style.opacity='1';
+  }
+}
+
+function sendChatMessage(){
+  const inp=document.getElementById('chatInput');
+  const txt=inp.value.trim();
+  if(!txt||!chatWs||chatWs.readyState!==WebSocket.OPEN||_chatBusy) return;
+  inp.value=''; autoResizeTextarea(inp);
+  _mkUserBubble(txt);
+  chatWs.send(JSON.stringify({message:txt}));
+  _chatBusy=true;
+  document.getElementById('chatSendBtn').disabled=true;
+  document.getElementById('chatSendBtn').style.opacity='0.5';
+  _showTyping();
+}
+
+function _mkUserBubble(text){
+  const msgs=document.getElementById('chatMessages');
+  const d=document.createElement('div');
+  d.style.cssText='display:flex;justify-content:flex-end;margin-bottom:2px';
+  d.innerHTML=`<div style="max-width:72%;background:#6366f1;color:#fff;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:13px;line-height:1.5;white-space:pre-wrap">${_esc(text)}</div>`;
+  msgs.appendChild(d); _scrollChat();
+}
+
+function _mkAiBubble(){
+  const msgs=document.getElementById('chatMessages');
+  const wrap=document.createElement('div');
+  wrap.style.cssText='display:flex;align-items:flex-start;gap:10px;margin-bottom:2px';
+  wrap.innerHTML=`<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px"><svg width="13" height="13" fill="white" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div><div class="ai-b" style="max-width:75%;background:var(--surface);border:1px solid var(--border);border-radius:4px 16px 16px 16px;padding:10px 14px;font-size:13px;line-height:1.6;color:var(--text);white-space:pre-wrap"></div>`;
+  msgs.appendChild(wrap); _scrollChat();
+  return wrap.querySelector('.ai-b');
+}
+
+function _chatSysMsg(t){
+  const msgs=document.getElementById('chatMessages');
+  const d=document.createElement('div');
+  d.style.cssText='text-align:center;font-size:12px;color:#94a3b8;padding:4px 0';
+  d.textContent=t; msgs.appendChild(d); _scrollChat();
+}
+
+function _scrollChat(){const m=document.getElementById('chatMessages');m.scrollTop=m.scrollHeight;}
+function _esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function setChatLang(lang){
+  if(lang===chatLang) return;
+  chatLang=lang;
+  document.getElementById('langEN').style.background=lang==='en'?'#6366f1':'transparent';
+  document.getElementById('langEN').style.color=lang==='en'?'#fff':'var(--text-2)';
+  document.getElementById('langES').style.background=lang==='es'?'#6366f1':'transparent';
+  document.getElementById('langES').style.color=lang==='es'?'#fff':'var(--text-2)';
+  newChatSession();
+}
+
+function newChatSession(){
+  if(chatWs){chatWs.close();chatWs=null;}
+  chatSessionId=null; _aiBubble=null; _chatBusy=false;
+  document.getElementById('chatMessages').innerHTML=`<div id="chatWelcome" style="text-align:center;padding:48px 20px"><div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px"><svg width="24" height="24" fill="white" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div><div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Staff AI Assistant</div><div style="font-size:13px;color:var(--text-3);max-width:400px;margin:0 auto;line-height:1.6">Internal tool for attorneys, paralegals, and receptionists. Ask about caller situations, urgency triage, case types, or look up recent calls and intake records.</div><div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:20px;max-width:520px;margin-left:auto;margin-right:auto"><button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit">What urgency flags should I watch for?</button><button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit">Explain DACA renewal eligibility</button><button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit">What intake questions to ask for a removal defense case?</button><button onclick="useSuggestion(this)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:12px;color:var(--text-2);cursor:pointer;font-family:inherit">Summarise recent high-urgency calls</button></div></div>`;
+  initChatSession(chatLang);
+}
+
+function useSuggestion(btn){
+  const inp=document.getElementById('chatInput');
+  inp.value=btn.textContent;
+  autoResizeTextarea(inp);
+  inp.focus();
+}
+
+function autoResizeTextarea(el){
+  el.style.height='auto';
+  el.style.height=Math.min(el.scrollHeight,120)+'px';
+}
 
 // ── Transcript modal ──────────────────────────────────────────────────────
 async function viewTranscript(callSid, name, phone){

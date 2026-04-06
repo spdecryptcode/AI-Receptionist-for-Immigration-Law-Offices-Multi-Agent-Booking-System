@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Exported constants — used by outbound_callback.py for re-queue delay calculation
 OFFICE_OPEN_HOUR: int = 9
-OFFICE_CLOSE_HOUR: int = 22
+OFFICE_CLOSE_HOUR: int = 18
 OFFICE_TZ: str = "America/New_York"  # kept in sync with settings.office_timezone
 
 # We use a simple holiday check rather than a full holiday library
@@ -46,11 +46,8 @@ _US_FEDERAL_HOLIDAYS_MMDD = {
 def is_office_open(now: datetime | None = None) -> bool:
     """
     Return True if the current time falls within configured office hours.
-    Currently set to 24/7 — always open.
     """
-    return True
-
-    tz: ZoneInfo = settings.tz  # noqa: unreachable — kept for reference
+    tz: ZoneInfo = settings.tz
     now = now or datetime.now(tz)
 
     # Weekend

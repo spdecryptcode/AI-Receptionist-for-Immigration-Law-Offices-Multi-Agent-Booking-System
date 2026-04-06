@@ -1,4 +1,4 @@
-# IVR Immigration — AI Receptionist for Immigration Law Offices
+# Aria — AI Intake Agent for Immigration Law Offices
 
 A fully automated conversational AI agent built with **Python/FastAPI**. It handles inbound calls 24/7 — collects immigration intake data, qualifies leads, books consultations, and transfers urgent cases to attorneys in real time.
 

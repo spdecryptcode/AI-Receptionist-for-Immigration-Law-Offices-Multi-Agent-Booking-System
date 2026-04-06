@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 64" fill="none" role="img" aria-label="Aria — AI Intake Agent">
+  <defs>
+    <linearGradient id="aria-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon mark: 64×64 rounded square with gradient -->
+  <rect width="64" height="64" rx="16" fill="url(#aria-bg)"/>
+
+  <!--
+    Aria logo mark concept:
+    A geometric "A" — two converging lines peak at the top,
+    with three voice-waveform bars in the centre space instead of
+    a traditional crossbar. The bars represent voice intake / AI listening.
+  -->
+
+  <!-- A letterform: apex (32,10) · left base (12,54) · right base (52,54) -->
+  <path d="M12 54L32 10L52 54"
+        stroke="white" stroke-width="3.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Voice waveform bars — 3 bars (w=4, gap=2) centred at x=32, bases at y=46 -->
+  <rect x="24" y="38" width="4" height="8"  rx="2" fill="white"/>
+  <rect x="30" y="34" width="4" height="12" rx="2" fill="white"/>
+  <rect x="36" y="38" width="4" height="8"  rx="2" fill="white"/>
+
+  <!-- Wordmark -->
+  <text
+    x="80" y="38"
+    font-family="Inter, system-ui, -apple-system, sans-serif"
+    font-size="28" font-weight="700"
+    fill="#0f172a" letter-spacing="-0.5"
+  >Aria</text>
+
+  <!-- Tagline -->
+  <text
+    x="81" y="54"
+    font-family="Inter, system-ui, -apple-system, sans-serif"
+    font-size="11" font-weight="500"
+    fill="#64748b" letter-spacing="1.5"
+  >AI INTAKE AGENT</text>
+</svg>
