@@ -1147,7 +1147,7 @@ let _intakeData=[],_intakePage=0,_intakeSort={col:'started_at',dir:-1},_intakeQ=
 const _PAGE=20;
 function _matchQ(row,q){
   if(!q) return true;
-  const words=q.toLowerCase().split(/\s+/).filter(Boolean);
+  const words=q.toLowerCase().split(/\\s+/).filter(Boolean);
   const haystack=Object.values(row).map(v=>v==null?'':String(v).toLowerCase()).join(' ');
   return words.every(w=>haystack.includes(w));
 }
